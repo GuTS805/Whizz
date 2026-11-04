@@ -1,6 +1,13 @@
 import hardhatToolboxViemPlugin from "@nomicfoundation/hardhat-toolbox-viem";
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
+import path from "node:path";
 import { configVariable, defineConfig } from "hardhat/config";
+
+// Load secrets from contracts/.env (git-ignored) into process.env.
+// Uses Node's built-in loader — no dotenv package needed.
+const envFile = path.join(import.meta.dirname, ".env");
+if (existsSync(envFile)) process.loadEnvFile(envFile);
 
 // Use the solc compiler bundled in the `solc` npm package instead of
 // downloading it — binaries.soliditylang.org is flaky on some networks.
