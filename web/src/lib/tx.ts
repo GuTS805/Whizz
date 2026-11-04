@@ -63,15 +63,19 @@ const isAlreadyKnown = (e: unknown) => /already known|nonce too low|known transa
  *     returns the receipt in the same call — no receipt polling.
  * Falls back to send + poll if the sync call fails for a non-revert reason.
  */
-async function sendSigned(serializedTransaction: Hex): Promise<TransactionReceipt> {
-  // A brand-new wallet's gas money can take a few blocks to become spendable
-  // on Monad (execution runs slightly behind consensus) — retry briefly.
-  for (let attempt = 0; ; attempt++) {
+async function sendSigned(sign: (tipBump: bigint) => Promise<Hex>): Promise<TransactionReceipt> {
+  let serializedTransaction = await sign(0n);
+  // A brand-new wallet's gas money can take a few seconds to become spendable
+  // on Monad (execution runs slightly behind consensus) — retry for a while.
+  // The RPC keeps rejecting a tx it already rejected (same hash), even after the
+  // money arrives, so each retry is RE-SIGNED with a 1-wei higher tip = new hash.
+  for (let attempt = 0, bump = 0n; ; attempt++) {
     try {
       return await publicClient.sendRawTransactionSync({ serializedTransaction, throwOnReceiptRevert: false, timeout: 15_000 });
     } catch (err) {
-      if (isInsufficientBalance(err) && attempt < 12) {
+      if (isInsufficientBalance(err) && attempt < 30) {
         await new Promise((r) => setTimeout(r, 500));
+        serializedTransaction = await sign(++bump);
         continue;
       }
       if (isInsufficientBalance(err)) throw err;
@@ -118,19 +122,20 @@ async function signAndSend(opts: {
       chainId: monadTestnet.id,
       client: publicClient,
     });
-    const signed = await account.signTransaction({
-      chainId: monadTestnet.id,
-      type: "eip1559",
-      to,
-      data,
-      value: value ?? 0n,
-      gas,
-      nonce,
-      maxFeePerGas,
-      maxPriorityFeePerGas,
-    });
+    const sign = (tipBump: bigint) =>
+      account.signTransaction({
+        chainId: monadTestnet.id,
+        type: "eip1559",
+        to,
+        data,
+        value: value ?? 0n,
+        gas,
+        nonce,
+        maxFeePerGas,
+        maxPriorityFeePerGas: maxPriorityFeePerGas + tipBump,
+      });
     try {
-      receipt = await sendSigned(signed);
+      receipt = await sendSigned(sign);
     } catch (e) {
       // The tx never made it on-chain, so its nonce is unused — resync from the chain.
       account.nonceManager!.reset({ address: account.address, chainId: monadTestnet.id });
