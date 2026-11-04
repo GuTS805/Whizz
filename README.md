@@ -11,7 +11,7 @@ it — poof — it goes back to you.
 | | |
 | --- | --- |
 | 🌐 **Live app** | https://whizz-pink.vercel.app |
-| 📜 **Contract** | [`0xbc0dbffa254a6cca6f385c4b0222b0a689d17f40`](https://testnet.monadexplorer.com/address/0xbc0dbffa254a6cca6f385c4b0222b0a689d17f40) |
+| 📜 **Contract** | [`0x97fbebffcb6e3ab5aeb68c65c68e52a6051b3415`](https://testnet.monadexplorer.com/address/0x97fbebffcb6e3ab5aeb68c65c68e52a6051b3415) |
 | ⛓️ **Network** | Monad Testnet (chain ID `10143`) |
 
 ## Why Monad
