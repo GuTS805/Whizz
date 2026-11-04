@@ -2,10 +2,12 @@
 
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
-import { parseEther, type PrivateKeyAccount } from "viem";
+import { hexToBytes, parseEther, type PrivateKeyAccount } from "viem";
 
 import { mon, nowSec, sleep, timeLeft } from "@/lib/format";
+import { decryptSnap, isEncryptedSnap } from "@/lib/crypto";
 import { hexToImageUrl } from "@/lib/image";
+import { exportPrivateKey } from "@/lib/wallet";
 import { friendlyError, writeWhizz } from "@/lib/tx";
 import { getSnapContent, type SnapView } from "@/lib/whizz";
 
@@ -38,7 +40,7 @@ export function SnapViewer({
   senderName: string;
   onClose: () => void;
 }) {
-  const [content, setContent] = useState<{ caption: string; url: string | null } | null>(null);
+  const [content, setContent] = useState<{ caption: string; url: string | null; isPrivate: boolean; error?: string } | null>(null);
   const [claimed, setClaimed] = useState(snap.claimed);
   const [holding, setHolding] = useState(false);
   const [ticksDone, setTicksDone] = useState(0);
@@ -57,19 +59,44 @@ export function SnapViewer({
   const progress = hasMoney ? Number((claimed * 1000n) / total) / 1000 : 1;
   const done = hasMoney && claimed >= total;
 
-  // Load the photo + caption from the on-chain event.
+  // Load the photo + caption from the on-chain event; private snaps are
+  // decrypted here, on this phone, with your own wallet key.
   useEffect(() => {
     let url: string | null = null;
-    getSnapContent(snap)
-      .then((c) => {
+    let cancelled = false;
+    (async () => {
+      const c = await getSnapContent(snap);
+      const bytes = hexToBytes(c.image);
+      if (isEncryptedSnap(bytes)) {
+        try {
+          const d = await decryptSnap(exportPrivateKey()!, bytes);
+          url = URL.createObjectURL(new Blob([d.image as BlobPart], { type: "image/jpeg" }));
+          if (!cancelled) setContent({ caption: d.caption, url, isPrivate: true });
+        } catch {
+          if (!cancelled) setContent({ caption: "", url: null, isPrivate: true, error: "🔒 Can't decrypt — this snap was sent to a different wallet." });
+        }
+      } else {
         url = hexToImageUrl(c.image);
-        setContent({ caption: c.caption, url });
-      })
-      .catch(() => setContent({ caption: "", url: null }));
+        if (!cancelled) setContent({ caption: c.caption, url, isPrivate: false });
+      }
+    })().catch(() => {
+      if (!cancelled) setContent({ caption: "", url: null, isPrivate: false, error: "Couldn't load this snap." });
+    });
     return () => {
+      cancelled = true;
       if (url) URL.revokeObjectURL(url);
     };
   }, [snap]);
+
+  const block = async () => {
+    if (!window.confirm(`Block @${senderName}? They won't be able to snap you or add you. You can unblock them in Friends.`)) return;
+    try {
+      await writeWhizz({ account, functionName: "setBlocked", args: [snap.from, true], label: "block" });
+      onClose();
+    } catch (e) {
+      setError(friendlyError(e));
+    }
+  };
 
   useEffect(() => {
     const id = setInterval(() => setNow(nowSec()), 1000);
@@ -161,7 +188,9 @@ export function SnapViewer({
             style={{ filter: `blur(${blurPx}px)` }}
           />
         ) : (
-          <div className="flex h-full items-center justify-center text-white/40">{content ? "No photo" : "Loading snap…"}</div>
+          <div className="flex h-full items-center justify-center px-8 text-center text-white/50">
+            {content ? (content.error ?? "No photo") : "Loading snap…"}
+          </div>
         )}
 
         {content?.caption && (
@@ -171,8 +200,13 @@ export function SnapViewer({
         <button onClick={onClose} className="absolute top-4 left-4 rounded-full bg-black/60 px-3 py-1 text-xl" onPointerDown={(e) => e.stopPropagation()}>
           ✕
         </button>
-        <div className="absolute top-4 right-4 rounded-full bg-black/60 px-3 py-1 text-xs">
-          @{senderName} · poof in {timeLeft(snap.expiresAt, now)}
+        <div className="absolute top-4 right-4 flex flex-col items-end gap-1.5" onPointerDown={(e) => e.stopPropagation()}>
+          <div className="rounded-full bg-black/60 px-3 py-1 text-xs">
+            {content?.isPrivate && "🔒 "}@{senderName} · poof in {timeLeft(snap.expiresAt, now)}
+          </div>
+          <button onClick={block} className="rounded-full bg-black/60 px-3 py-1 text-xs text-red-300">
+            Block
+          </button>
         </div>
 
         {hasMoney && (

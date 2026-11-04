@@ -12,7 +12,22 @@ export const whizzAbi = [
   },
   {
     "inputs": [],
+    "name": "BadEncryptionKey",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "Blocked",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "CannotCatchOwnRain",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "FriendsOnly",
     "type": "error"
   },
   {
@@ -28,6 +43,11 @@ export const whizzAbi = [
   {
     "inputs": [],
     "name": "InvalidName",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidReaction",
     "type": "error"
   },
   {
@@ -106,6 +126,36 @@ export const whizzAbi = [
     "type": "error"
   },
   {
+    "inputs": [],
+    "name": "WrongTip",
+    "type": "error"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "user",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "other",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "bool",
+        "name": "isBlocked",
+        "type": "bool"
+      }
+    ],
+    "name": "BlockSet",
+    "type": "event"
+  },
+  {
     "anonymous": false,
     "inputs": [
       {
@@ -144,6 +194,19 @@ export const whizzAbi = [
         "internalType": "address",
         "name": "user",
         "type": "address"
+      }
+    ],
+    "name": "EncryptionKeySet",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "user",
+        "type": "address"
       },
       {
         "indexed": true,
@@ -172,6 +235,25 @@ export const whizzAbi = [
       }
     ],
     "name": "FriendRemoved",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "user",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "bool",
+        "name": "enabled",
+        "type": "bool"
+      }
+    ],
+    "name": "FriendsOnlySet",
     "type": "event"
   },
   {
@@ -532,6 +614,49 @@ export const whizzAbi = [
   {
     "inputs": [
       {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "name": "blocked",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "user",
+        "type": "address"
+      }
+    ],
+    "name": "blockedOf",
+    "outputs": [
+      {
+        "internalType": "address[]",
+        "name": "",
+        "type": "address[]"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
         "internalType": "uint256",
         "name": "id",
         "type": "uint256"
@@ -540,6 +665,25 @@ export const whizzAbi = [
     "name": "catchDrop",
     "outputs": [],
     "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "name": "encryptionKey",
+    "outputs": [
+      {
+        "internalType": "bytes",
+        "name": "",
+        "type": "bytes"
+      }
+    ],
+    "stateMutability": "view",
     "type": "function"
   },
   {
@@ -569,6 +713,25 @@ export const whizzAbi = [
         "internalType": "address[]",
         "name": "",
         "type": "address[]"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "name": "friendsOnly",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
       }
     ],
     "stateMutability": "view",
@@ -834,12 +997,49 @@ export const whizzAbi = [
   {
     "inputs": [
       {
+        "internalType": "uint8",
+        "name": "emoji",
+        "type": "uint8"
+      }
+    ],
+    "name": "reactionTip",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "pure",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
         "internalType": "uint256",
         "name": "id",
         "type": "uint256"
       }
     ],
     "name": "reclaim",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "string",
+        "name": "name",
+        "type": "string"
+      },
+      {
+        "internalType": "bytes",
+        "name": "pubKey",
+        "type": "bytes"
+      }
+    ],
+    "name": "register",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
@@ -889,6 +1089,50 @@ export const whizzAbi = [
       }
     ],
     "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "other",
+        "type": "address"
+      },
+      {
+        "internalType": "bool",
+        "name": "isBlocked",
+        "type": "bool"
+      }
+    ],
+    "name": "setBlocked",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes",
+        "name": "pubKey",
+        "type": "bytes"
+      }
+    ],
+    "name": "setEncryptionKey",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bool",
+        "name": "enabled",
+        "type": "bool"
+      }
+    ],
+    "name": "setFriendsOnly",
+    "outputs": [],
+    "stateMutability": "nonpayable",
     "type": "function"
   },
   {

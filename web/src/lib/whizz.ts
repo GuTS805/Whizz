@@ -105,6 +105,22 @@ export async function listFriendRequests(user: Address, myFriends: Address[]): P
   return Promise.all(pending.map(async (address) => ({ address, name: await nameOf(address), mutual: false })));
 }
 
+/** The 64-byte key a user's snaps are encrypted to, or null if they never published one. */
+export async function getEncryptionKey(user: Address): Promise<Hex | null> {
+  const key = await publicClient.readContract({ ...base(), functionName: "encryptionKey", args: [user] });
+  return key && key !== "0x" ? key : null;
+}
+
+export async function getFriendsOnly(user: Address): Promise<boolean> {
+  return publicClient.readContract({ ...base(), functionName: "friendsOnly", args: [user] });
+}
+
+/** People `user` has blocked, with their names (for the Unblock list). */
+export async function listBlocked(user: Address): Promise<{ address: Address; name: string }[]> {
+  const addrs = await publicClient.readContract({ ...base(), functionName: "blockedOf", args: [user] });
+  return Promise.all(addrs.map(async (address) => ({ address, name: await nameOf(address) })));
+}
+
 const snapSentEvent = getAbiItem({ abi: whizzAbi, name: "SnapSent" });
 
 /**

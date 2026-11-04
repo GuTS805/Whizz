@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { network } from "hardhat";
-import { getAddress, parseEther, toHex } from "viem";
+import { getAddress, hashMessage, parseEther, recoverPublicKey, toHex } from "viem";
 
 // Each `it` block deploys a fresh contract, so tests never affect each other.
 describe("Whizz", async function () {
@@ -127,15 +127,119 @@ describe("Whizz", async function () {
       const { whizz, asBob, asCarol } = await deploy();
       await whizz.write.sendSnap([bob.account.address, ONE_MIN, "", IMAGE]);
 
-      // Bob reacts 🔥 → Alice gets paid.
-      await viem.assertions.balancesHaveChanged(asBob.write.react([1n, 1], { value: parseEther("0.01") }), [
-        { address: alice.account.address, amount: parseEther("0.01") },
+      // Bob reacts 🔥 (0.001) → Alice gets paid.
+      await viem.assertions.balancesHaveChanged(asBob.write.react([1n, 1], { value: parseEther("0.001") }), [
+        { address: alice.account.address, amount: parseEther("0.001") },
       ]);
-      // Alice reacts back → Bob gets paid.
-      await viem.assertions.balancesHaveChanged(whizz.write.react([1n, 2], { value: parseEther("0.02") }), [
-        { address: bob.account.address, amount: parseEther("0.02") },
+      // Alice reacts 💀 (0.002) back → Bob gets paid.
+      await viem.assertions.balancesHaveChanged(whizz.write.react([1n, 2], { value: parseEther("0.002") }), [
+        { address: bob.account.address, amount: parseEther("0.002") },
       ]);
-      await viem.assertions.revertWithCustomError(asCarol.write.react([1n, 1]), whizz, "NotParticipant");
+      await viem.assertions.revertWithCustomError(
+        asCarol.write.react([1n, 1], { value: parseEther("0.001") }), whizz, "NotParticipant");
+    });
+
+    it("only allows known emojis with their exact tip", async function () {
+      const { whizz, asBob } = await deploy();
+      await whizz.write.sendSnap([bob.account.address, ONE_MIN, "", IMAGE]);
+
+      assert.equal(await whizz.read.reactionTip([3]), parseEther("0.005"));
+      await viem.assertions.revertWithCustomError(asBob.write.react([1n, 0], { value: 0n }), whizz, "InvalidReaction");
+      await viem.assertions.revertWithCustomError(asBob.write.react([1n, 4], { value: parseEther("0.001") }), whizz, "InvalidReaction");
+      await viem.assertions.revertWithCustomError(asBob.write.react([1n, 1], { value: 0n }), whizz, "WrongTip");
+      await viem.assertions.revertWithCustomError(asBob.write.react([1n, 1], { value: parseEther("1") }), whizz, "WrongTip");
+      await asBob.write.react([1n, 3], { value: parseEther("0.005") }); // 🫶 exact tip works
+    });
+  });
+
+  // ─────────────────────────── Anti-spam ───────────────────────────
+  describe("anti-spam", function () {
+    it("friends-only mode accepts snaps only from people you've added", async function () {
+      const { whizz, asBob, asCarol } = await deploy();
+      await asBob.write.setName(["bob"]);
+      await whizz.write.setName(["alice"]);
+      await viem.assertions.emitWithArgs(asBob.write.setFriendsOnly([true]), whizz, "FriendsOnlySet",
+        [getAddr(bob.account.address), true]);
+
+      // Alice isn't on Bob's list → rejected. Carol neither.
+      await viem.assertions.revertWithCustomError(
+        whizz.write.sendSnap([bob.account.address, ONE_MIN, "", IMAGE]), whizz, "FriendsOnly");
+      await viem.assertions.revertWithCustomError(
+        asCarol.write.sendSnap([bob.account.address, ONE_MIN, "", IMAGE]), whizz, "FriendsOnly");
+
+      await asBob.write.addFriend([alice.account.address]); // Bob adds Alice
+      await whizz.write.sendSnap([bob.account.address, ONE_MIN, "", IMAGE]); // now allowed
+
+      await asBob.write.setFriendsOnly([false]);
+      await asCarol.write.sendSnap([bob.account.address, ONE_MIN, "", IMAGE]); // open again
+    });
+
+    it("blocked people can't snap you or add you, until unblocked", async function () {
+      const { whizz, asBob } = await deploy();
+      await whizz.write.setName(["alice"]);
+      await asBob.write.setName(["bob"]);
+      await viem.assertions.emitWithArgs(asBob.write.setBlocked([alice.account.address, true]), whizz, "BlockSet",
+        [getAddr(bob.account.address), getAddr(alice.account.address), true]);
+
+      await viem.assertions.revertWithCustomError(
+        whizz.write.sendSnap([bob.account.address, ONE_MIN, "", IMAGE]), whizz, "Blocked");
+      await viem.assertions.revertWithCustomError(whizz.write.addFriend([bob.account.address]), whizz, "Blocked");
+      await viem.assertions.revertWithCustomError(asBob.write.setBlocked([bob.account.address, true]), whizz, "InvalidRecipient");
+
+      await asBob.write.setBlocked([alice.account.address, false]);
+      await whizz.write.sendSnap([bob.account.address, ONE_MIN, "", IMAGE]);
+      await whizz.write.addFriend([bob.account.address]);
+    });
+
+    it("keeps a correct, duplicate-free block list for the Unblock screen", async function () {
+      const { whizz, asBob } = await deploy();
+      const list = async () => [...(await whizz.read.blockedOf([bob.account.address]))].map((a) => a.toLowerCase()).sort();
+      const lower = (...a: string[]) => a.map((x) => x.toLowerCase()).sort();
+
+      await asBob.write.setBlocked([alice.account.address, true]);
+      await asBob.write.setBlocked([carol.account.address, true]);
+      await asBob.write.setBlocked([dave.account.address, true]);
+      await asBob.write.setBlocked([carol.account.address, true]); // repeat → no duplicate
+      assert.deepEqual(await list(), lower(alice.account.address, carol.account.address, dave.account.address));
+
+      await asBob.write.setBlocked([carol.account.address, false]); // middle
+      assert.deepEqual(await list(), lower(alice.account.address, dave.account.address));
+      assert.equal(await whizz.read.blocked([bob.account.address, dave.account.address]), true); // moved, still blocked
+
+      await asBob.write.setBlocked([carol.account.address, false]); // repeat unblock → no-op
+      await asBob.write.setBlocked([dave.account.address, false]); // last
+      await asBob.write.setBlocked([alice.account.address, false]); // only
+      assert.deepEqual(await list(), []);
+    });
+  });
+
+  // ─────────────────────────── Encryption keys ───────────────────────────
+  describe("encryption keys", function () {
+    /** The wallet's real 64-byte public key, recovered from a signature. */
+    async function pubKeyOf(client: typeof alice) {
+      const message = "whizz";
+      const signature = await client.signMessage({ account: client.account, message });
+      const full = await recoverPublicKey({ hash: hashMessage(message), signature }); // 0x04 + 64 bytes
+      return `0x${full.slice(4)}` as `0x${string}`;
+    }
+
+    it("register sets the name and the wallet's own key in one tx", async function () {
+      const { whizz } = await deploy();
+      const key = await pubKeyOf(alice);
+      await viem.assertions.emitWithArgs(whizz.write.register(["alice", key]), whizz, "EncryptionKeySet",
+        [getAddr(alice.account.address)]);
+      assert.equal(await whizz.read.nameOf([alice.account.address]), "alice");
+      assert.equal(await whizz.read.encryptionKey([alice.account.address]), key);
+    });
+
+    it("rejects someone else's key, wrong lengths, and doesn't half-register", async function () {
+      const { whizz } = await deploy();
+      const bobsKey = await pubKeyOf(bob);
+      await viem.assertions.revertWithCustomError(whizz.write.setEncryptionKey([bobsKey]), whizz, "BadEncryptionKey");
+      await viem.assertions.revertWithCustomError(whizz.write.setEncryptionKey(["0x1234"]), whizz, "BadEncryptionKey");
+      // A bad key makes register revert entirely, so the name isn't claimed either.
+      await viem.assertions.revertWithCustomError(whizz.write.register(["alice", bobsKey]), whizz, "BadEncryptionKey");
+      assert.equal(await whizz.read.nameOf([alice.account.address]), "");
     });
   });
 

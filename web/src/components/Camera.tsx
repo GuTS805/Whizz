@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { parseEther, type Hex, type PrivateKeyAccount } from "viem";
+import { hexToBytes, parseEther, type Hex, type PrivateKeyAccount } from "viem";
 
 import { captureFrame } from "@/lib/image";
 import { friendlyError, writeWhizz } from "@/lib/tx";
-import { addressForName, listFriends, type FriendView } from "@/lib/whizz";
+import { encryptSnap } from "@/lib/crypto";
+import { addressForName, getEncryptionKey, listFriends, type FriendView } from "@/lib/whizz";
 
 const AMOUNTS = ["0", "0.01", "0.05", "0.1"] as const;
 const TIMERS = [
@@ -139,11 +140,23 @@ function Compose({
       setBusy("Finding @" + to);
       const recipient = await addressForName(to);
       if (!recipient) throw new Error(`No one called @${to} yet`);
+
+      // Private snap: encrypt photo + caption to the recipient's key, so the
+      // chain only stores ciphertext. (Every Whizz sign-up publishes a key.)
+      const key = await getEncryptionKey(recipient);
+      if (!key && !window.confirm(`@${to} hasn't enabled private snaps yet. Send this snap unencrypted (anyone could view it)?`)) {
+        setBusy(null);
+        return;
+      }
+      setBusy(key ? "Encrypting 🔒" : "Whizzing ⚡");
+      const payload = key ? await encryptSnap(key, caption, hexToBytes(shot.hex)) : shot.hex;
+
       setBusy("Whizzing ⚡");
       await writeWhizz({
         account,
         functionName: "sendSnap",
-        args: [recipient, timer, caption, shot.hex],
+        // Encrypted snaps carry the caption inside the ciphertext, not in the clear.
+        args: [recipient, timer, key ? "" : caption, payload],
         value: parseEther(amount),
         label: "sendSnap",
       });
@@ -215,7 +228,7 @@ function Compose({
           </button>
         </div>
         {error && <p className="text-sm text-red-400">{error}</p>}
-        <p className="text-center text-[11px] text-white/40">Photo ~{Math.round((shot.hex.length - 2) / 2 / 1024)} KB · goes fully on-chain</p>
+        <p className="text-center text-[11px] text-white/40">🔒 Encrypted for the recipient · ~{Math.round((shot.hex.length - 2) / 2 / 1024)} KB on-chain</p>
       </div>
     </div>
   );

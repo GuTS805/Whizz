@@ -64,6 +64,17 @@ contract Whizz {
     mapping(address => mapping(address => bool)) private _inAddedBy;
     uint256 public constant MAX_FRIENDS = 500;
 
+    /// @dev Anti-spam. friendsOnly: only people you've added can snap you.
+    mapping(address => bool) public friendsOnly;
+    /// @dev user => other => blocked (blocked people can't snap or add you).
+    mapping(address => mapping(address => bool)) public blocked;
+    /// @dev Listable copy of each user's block list (so the app can show "Unblock").
+    mapping(address => address[]) private _blockedList;
+    mapping(address => mapping(address => uint256)) private _blockedSlot; // 1-based
+
+    /// @dev Public key each user's snaps are encrypted to (see setEncryptionKey).
+    mapping(address => bytes) public encryptionKey;
+
     // ─────────────────────────────── Events ──────────────────────────────
     // Events are cheap on-chain logs. The app listens to them live over
     // WebSocket — this is how a snap "pops up" on your friend's phone.
@@ -87,6 +98,9 @@ contract Whizz {
     event RainEnded(uint256 indexed id, address indexed from, uint256 refunded);
     event FriendAdded(address indexed user, address indexed friend);
     event FriendRemoved(address indexed user, address indexed friend);
+    event FriendsOnlySet(address indexed user, bool enabled);
+    event BlockSet(address indexed user, address indexed other, bool isBlocked);
+    event EncryptionKeySet(address indexed user);
 
     // ─────────────────────────────── Errors ──────────────────────────────
     // Custom errors are cheaper than revert strings and easy to decode in the app.
@@ -112,11 +126,43 @@ contract Whizz {
     error AlreadyFriends();
     error NotFriends();
     error TooManyFriends();
+    error FriendsOnly();
+    error Blocked();
+    error BadEncryptionKey();
+    error InvalidReaction();
+    error WrongTip();
 
     // ─────────────────────────────── Names ───────────────────────────────
 
     /// @notice Claim a username (3-20 chars: a-z, 0-9, _). Re-calling renames you.
     function setName(string calldata name) external {
+        _setName(name);
+    }
+
+    /// @notice Sign-up in one transaction: claim a username and publish your
+    ///         encryption key so friends can send you private snaps.
+    function register(string calldata name, bytes calldata pubKey) external {
+        _setName(name);
+        _setEncryptionKey(pubKey);
+    }
+
+    /// @notice Publish the public key snaps are encrypted to (64-byte uncompressed
+    ///         secp256k1 key, without the 0x04 prefix). It must be YOUR wallet's
+    ///         key — an address is the last 20 bytes of keccak256(pubKey) — so
+    ///         nobody can register a fake key for someone else.
+    function setEncryptionKey(bytes calldata pubKey) external {
+        _setEncryptionKey(pubKey);
+    }
+
+    function _setEncryptionKey(bytes calldata pubKey) private {
+        if (pubKey.length != 64 || address(uint160(uint256(keccak256(pubKey)))) != msg.sender) {
+            revert BadEncryptionKey();
+        }
+        encryptionKey[msg.sender] = pubKey;
+        emit EncryptionKeySet(msg.sender);
+    }
+
+    function _setName(string calldata name) private {
         bytes memory b = bytes(name);
         if (b.length < 3 || b.length > MAX_NAME_LENGTH) revert InvalidName();
         for (uint256 i; i < b.length; ++i) {
@@ -151,6 +197,9 @@ contract Whizz {
     {
         if (to == address(0) || to == msg.sender) revert InvalidRecipient();
         if (duration < MIN_DURATION || duration > MAX_DURATION) revert InvalidDuration();
+        // Anti-spam: the recipient's block list and "friends only" setting.
+        if (blocked[to][msg.sender]) revert Blocked();
+        if (friendsOnly[to] && _friendSlot[to][msg.sender] == 0) revert FriendsOnly();
 
         id = ++snapCount; // ids start at 1, so 0 means "doesn't exist"
         uint64 expiresAt = uint64(block.timestamp) + duration;
@@ -208,9 +257,19 @@ contract Whizz {
 
     // ───────────────────────────── Reactions ─────────────────────────────
 
-    /// @notice React to a snap with an emoji; msg.value goes straight to the
-    ///         other person in the snap. (🔥 = small tip, etc. — set by the app.)
+    /// @notice The exact tip each reaction carries: 1 = 🔥, 2 = 💀, 3 = 🫶.
+    ///         Enforced here, not just in the app.
+    function reactionTip(uint8 emoji) public pure returns (uint256) {
+        if (emoji == 1) return 0.001 ether;
+        if (emoji == 2) return 0.002 ether;
+        if (emoji == 3) return 0.005 ether;
+        revert InvalidReaction();
+    }
+
+    /// @notice React to a snap with an emoji; its tip (msg.value) goes straight
+    ///         to the other person in the snap.
     function react(uint256 snapId, uint8 emoji) external payable {
+        if (msg.value != reactionTip(emoji)) revert WrongTip();
         Snap storage s = snaps[snapId];
         if (s.from == address(0)) revert UnknownSnap();
 
@@ -220,7 +279,7 @@ contract Whizz {
         else revert NotParticipant();
 
         emit Reacted(snapId, msg.sender, other, emoji, msg.value);
-        if (msg.value > 0) _send(other, msg.value);
+        _send(other, msg.value);
     }
 
     // ─────────────────────────────── Rain ────────────────────────────────
@@ -285,6 +344,7 @@ contract Whizz {
     function addFriend(address friend) external {
         if (friend == address(0) || friend == msg.sender) revert InvalidRecipient();
         if (bytes(nameOf[friend]).length == 0) revert NoSuchUser();
+        if (blocked[friend][msg.sender]) revert Blocked(); // blocked people can't spam "added you"
         if (_friendSlot[msg.sender][friend] != 0) revert AlreadyFriends();
         address[] storage list = _friends[msg.sender];
         if (list.length >= MAX_FRIENDS) revert TooManyFriends();
@@ -336,6 +396,41 @@ contract Whizz {
 
     function addedByLength(address user) external view returns (uint256) {
         return _addedBy[user].length;
+    }
+
+    // ───────────────────────────── Anti-spam ─────────────────────────────
+
+    /// @notice Only accept snaps from people you've added.
+    function setFriendsOnly(bool enabled) external {
+        friendsOnly[msg.sender] = enabled;
+        emit FriendsOnlySet(msg.sender, enabled);
+    }
+
+    /// @notice Block (or unblock) someone: they can't snap you or add you.
+    function setBlocked(address other, bool isBlocked) external {
+        if (other == address(0) || other == msg.sender) revert InvalidRecipient();
+        if (blocked[msg.sender][other] == isBlocked) return; // already in that state
+        blocked[msg.sender][other] = isBlocked;
+
+        address[] storage list = _blockedList[msg.sender];
+        if (isBlocked) {
+            list.push(other);
+            _blockedSlot[msg.sender][other] = list.length;
+        } else {
+            // Same O(1) swap-and-pop as removeFriend.
+            uint256 slot = _blockedSlot[msg.sender][other];
+            address last = list[list.length - 1];
+            list[slot - 1] = last;
+            _blockedSlot[msg.sender][last] = slot;
+            list.pop();
+            delete _blockedSlot[msg.sender][other];
+        }
+        emit BlockSet(msg.sender, other, isBlocked);
+    }
+
+    /// @notice Everyone `user` has blocked.
+    function blockedOf(address user) external view returns (address[] memory) {
+        return _blockedList[user];
     }
 
     // ─────────────────────────────── Views ───────────────────────────────

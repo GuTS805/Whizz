@@ -272,4 +272,9 @@ const ERROR_TEXT: Record<string, string> = {
   AlreadyFriends: "You're already friends 🤝",
   NotFriends: "You're not friends",
   TooManyFriends: "Friend list is full (500 max)",
+  FriendsOnly: "They only accept snaps from friends — ask them to add you 🤝",
+  Blocked: "You can't do that — this user blocked you",
+  BadEncryptionKey: "Couldn't set up private snaps for this wallet",
+  InvalidReaction: "Unknown reaction",
+  WrongTip: "Wrong tip amount for that reaction",
 };

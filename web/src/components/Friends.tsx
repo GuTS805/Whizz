@@ -7,7 +7,7 @@ import type { Address, PrivateKeyAccount } from "viem";
 import { copyText } from "@/lib/clipboard";
 import { useWhizzEvents } from "@/lib/events";
 import { friendlyError, writeWhizz } from "@/lib/tx";
-import { addressForName, listFriendRequests, listFriends, type FriendView } from "@/lib/whizz";
+import { addressForName, getFriendsOnly, listBlocked, listFriendRequests, listFriends, type FriendView } from "@/lib/whizz";
 
 /**
  * Friends: add people by @username or QR, accept "added you" requests, and
@@ -89,7 +89,94 @@ export function Friends({
           ))}
         </ul>
       </section>
+
+      <Privacy account={account} />
     </div>
+  );
+}
+
+/** Anti-spam controls: friends-only mode and the block list. Both enforced by the contract. */
+function Privacy({ account }: { account: PrivateKeyAccount }) {
+  const [friendsOnly, setFriendsOnlyState] = useState<boolean | null>(null);
+  const [blockedUsers, setBlockedUsers] = useState<{ address: Address; name: string }[]>([]);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    const [fo, bl] = await Promise.all([getFriendsOnly(account.address), listBlocked(account.address)]);
+    setFriendsOnlyState(fo);
+    setBlockedUsers(bl);
+  }, [account.address]);
+
+  useEffect(() => {
+    const t = setTimeout(() => void load().catch(() => {}), 0);
+    return () => clearTimeout(t);
+  }, [load]);
+
+  useWhizzEvents((logs) => {
+    const me = account.address.toLowerCase();
+    if (logs.some((l) => (l.eventName === "BlockSet" || l.eventName === "FriendsOnlySet") && (l.args as { user: Address }).user.toLowerCase() === me)) {
+      void load();
+    }
+  });
+
+  const run = async (key: string, fn: () => Promise<unknown>) => {
+    setBusy(key);
+    setError(null);
+    try {
+      await fn();
+      await load();
+    } catch (e) {
+      setError(friendlyError(e));
+    }
+    setBusy(null);
+  };
+
+  return (
+    <section className="rounded-3xl bg-white/5 p-4">
+      <h2 className="font-bold">Privacy</h2>
+      <label className="mt-3 flex items-center justify-between gap-3">
+        <span>
+          <span className="block text-sm font-semibold">Friends only</span>
+          <span className="block text-xs text-white/50">Only people you&apos;ve added can snap you</span>
+        </span>
+        <button
+          role="switch"
+          aria-checked={friendsOnly === true}
+          disabled={friendsOnly === null || busy !== null}
+          onClick={() =>
+            run("friendsOnly", () =>
+              writeWhizz({ account, functionName: "setFriendsOnly", args: [!friendsOnly], label: "setFriendsOnly" }),
+            )
+          }
+          className={`relative h-7 w-12 shrink-0 rounded-full transition-colors disabled:opacity-50 ${friendsOnly ? "bg-whizz" : "bg-white/20"}`}
+        >
+          <span className={`absolute top-1 h-5 w-5 rounded-full bg-white transition-all ${friendsOnly ? "left-6" : "left-1"}`} />
+        </button>
+      </label>
+
+      <h3 className="mt-4 text-sm font-semibold">Blocked ({blockedUsers.length})</h3>
+      {blockedUsers.length === 0 && <p className="text-xs text-white/50">No one. Block people from a snap or an &quot;added you&quot; request.</p>}
+      <ul className="mt-2 space-y-2">
+        {blockedUsers.map((b) => (
+          <li key={b.address} className="flex items-center justify-between rounded-xl bg-black/30 px-3 py-2">
+            <span className="text-sm">@{b.name}</span>
+            <button
+              disabled={busy !== null}
+              onClick={() =>
+                run(b.address, () =>
+                  writeWhizz({ account, functionName: "setBlocked", args: [b.address, false], label: "unblock" }),
+                )
+              }
+              className="rounded-full bg-white/10 px-3 py-1 text-xs disabled:opacity-50"
+            >
+              {busy === b.address ? "…" : "Unblock"}
+            </button>
+          </li>
+        ))}
+      </ul>
+      {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+    </section>
   );
 }
 
@@ -161,23 +248,43 @@ function RequestRow({ account, person, onDone }: { account: PrivateKeyAccount; p
     <li className="rounded-2xl bg-whizz/10 p-3">
       <div className="flex items-center justify-between gap-3">
         <span className="font-semibold">@{person.name}</span>
-        <button
-          disabled={busy}
-          onClick={async () => {
-            setBusy(true);
-            setError(null);
-            try {
-              await writeWhizz({ account, functionName: "addFriend", args: [person.address], label: "addFriend" });
-              await onDone();
-            } catch (e) {
-              setError(friendlyError(e));
-            }
-            setBusy(false);
-          }}
-          className="rounded-full bg-whizz px-4 py-1.5 text-sm font-bold text-black disabled:opacity-50"
-        >
-          {busy ? "…" : "Add back"}
-        </button>
+        <div className="flex gap-2">
+          <button
+            disabled={busy}
+            onClick={async () => {
+              if (!window.confirm(`Block @${person.name}? They won't be able to snap you or add you.`)) return;
+              setBusy(true);
+              setError(null);
+              try {
+                await writeWhizz({ account, functionName: "setBlocked", args: [person.address, true], label: "block" });
+                await onDone();
+              } catch (e) {
+                setError(friendlyError(e));
+              }
+              setBusy(false);
+            }}
+            className="rounded-full bg-white/10 px-3 py-1.5 text-sm text-red-300 disabled:opacity-50"
+          >
+            Block
+          </button>
+          <button
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              setError(null);
+              try {
+                await writeWhizz({ account, functionName: "addFriend", args: [person.address], label: "addFriend" });
+                await onDone();
+              } catch (e) {
+                setError(friendlyError(e));
+              }
+              setBusy(false);
+            }}
+            className="rounded-full bg-whizz px-4 py-1.5 text-sm font-bold text-black disabled:opacity-50"
+          >
+            {busy ? "…" : "Add back"}
+          </button>
+        </div>
       </div>
       {error && <p className="mt-1 text-xs text-red-400">{error}</p>}
     </li>

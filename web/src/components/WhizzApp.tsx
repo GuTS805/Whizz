@@ -10,6 +10,8 @@ import { requestDrip, useBalance } from "@/lib/useBalance";
 import { exportPrivateKey, hasAccount, importPrivateKey, loadOrCreateAccount, normalizePrivateKey } from "@/lib/wallet";
 import { publicClient } from "@/lib/chain";
 import { whizzAbi } from "@/lib/abi";
+import { encryptionPublicKey } from "@/lib/crypto";
+import { getEncryptionKey } from "@/lib/whizz";
 
 import { Camera } from "./Camera";
 import { Friends } from "./Friends";
@@ -52,7 +54,23 @@ export function WhizzApp() {
         const n = await publicClient
           .readContract({ address: WHIZZ_ADDRESS, abi: whizzAbi, functionName: "nameOf", args: [acc.address] })
           .catch(() => "");
-        if (n) setName(n);
+        if (n) {
+          setName(n);
+          // Older or restored wallets may not have published an encryption key yet.
+          // Do it quietly in the background so friends can send private snaps.
+          void getEncryptionKey(acc.address)
+            .then((key) =>
+              key
+                ? undefined
+                : writeWhizz({
+                    account: acc,
+                    functionName: "setEncryptionKey",
+                    args: [encryptionPublicKey(exportPrivateKey()!)],
+                    label: "setEncryptionKey",
+                  }),
+            )
+            .catch(() => {});
+        }
       }
       setReady(true);
     };
@@ -248,9 +266,10 @@ function Onboarding({ onDone }: { onDone: (acc: PrivateKeyAccount, name: string)
         const err = await requestDrip(acc.address);
         if (err) throw new Error(err);
       }
-      // 3. Claim the username on-chain.
+      // 3. Claim the username + publish the key private snaps are encrypted to (one tx).
       setStatus("Claiming your name on Monad ⚡");
-      await writeWhizz({ account: acc, functionName: "setName", args: [input], label: "setName" });
+      const pubKey = encryptionPublicKey(exportPrivateKey()!);
+      await writeWhizz({ account: acc, functionName: "register", args: [input, pubKey], label: "register" });
       onDone(acc, input);
     } catch (e) {
       setError(friendlyError(e));
