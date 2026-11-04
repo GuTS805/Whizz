@@ -2,9 +2,8 @@
 
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
-import { nonceManager, parseEther, type PrivateKeyAccount } from "viem";
+import { parseEther, type PrivateKeyAccount } from "viem";
 
-import { monadTestnet } from "@/lib/chain";
 import { mon, nowSec, sleep, timeLeft } from "@/lib/format";
 import { hexToImageUrl } from "@/lib/image";
 import { friendlyError, writeWhizz } from "@/lib/tx";
@@ -108,8 +107,6 @@ export function SnapViewer({
           holdingRef.current = false;
           setHolding(false);
           setError(friendlyError(e));
-          // A failed tick can leave a gap in our local nonce sequence — reset it.
-          nonceManager.reset({ address: account.address, chainId: monadTestnet.id });
         })
         .finally(() => {
           reservedRef.current -= amount;

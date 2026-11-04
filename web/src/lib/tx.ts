@@ -4,8 +4,10 @@ import {
   BaseError,
   ContractFunctionRevertedError,
   encodeFunctionData,
+  keccak256,
   type ContractFunctionArgs,
   type ContractFunctionName,
+  type Hex,
   type PrivateKeyAccount,
   type TransactionReceipt,
 } from "viem";
@@ -13,7 +15,6 @@ import {
 import { whizzAbi } from "./abi";
 import { monadTestnet, publicClient, WHIZZ_ADDRESS } from "./chain";
 import { statsStore } from "./stats";
-import { walletFor } from "./wallet";
 
 type WriteFn = ContractFunctionName<typeof whizzAbi, "nonpayable" | "payable">;
 
@@ -26,7 +27,66 @@ type WriteFn = ContractFunctionName<typeof whizzAbi, "nonpayable" | "payable">;
 const gasCache = new Map<string, bigint>();
 const BUFFER_PCT = 115n;
 
+/**
+ * Gas price cache. Fetching fees costs 1–2 RPC round trips (200–600ms each
+ * from a phone), so we fetch once and refresh in the background.
+ */
+type Fees = { maxFeePerGas: bigint; maxPriorityFeePerGas: bigint };
+let fees: Fees | null = null;
+let feesAt = 0;
+const FEES_TTL_MS = 15_000;
+
+async function getFees(): Promise<Fees> {
+  if (!fees || Date.now() - feesAt > FEES_TTL_MS) {
+    const f = await publicClient.estimateFeesPerGas();
+    fees = { maxFeePerGas: f.maxFeePerGas, maxPriorityFeePerGas: f.maxPriorityFeePerGas };
+    feesAt = Date.now();
+  }
+  return fees;
+}
+
+/** Call once on app start so the first snap doesn't wait for a fee lookup. */
+export function warmUp() {
+  void getFees().catch(() => {});
+}
+
 export class WhizzTxError extends Error {}
+
+const isInsufficientBalance = (e: unknown) => /insufficient balance|insufficient funds/i.test(String((e as Error)?.message ?? e));
+const isAlreadyKnown = (e: unknown) => /already known|nonce too low|known transaction/i.test(String((e as Error)?.message ?? e));
+
+/**
+ * FAST PATH — one network round trip per transaction:
+ *  1. sign locally (cached gas price, local nonce, cached gas limit)
+ *  2. `eth_sendRawTransactionSync` (EIP-7966): Monad's RPC sends the tx AND
+ *     returns the receipt in the same call — no receipt polling.
+ * Falls back to send + poll if the sync call fails for a non-revert reason.
+ */
+async function sendSigned(serializedTransaction: Hex): Promise<TransactionReceipt> {
+  // A brand-new wallet's gas money can take a few blocks to become spendable
+  // on Monad (execution runs slightly behind consensus) — retry briefly.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await publicClient.sendRawTransactionSync({ serializedTransaction, throwOnReceiptRevert: false, timeout: 15_000 });
+    } catch (err) {
+      if (isInsufficientBalance(err) && attempt < 12) {
+        await new Promise((r) => setTimeout(r, 500));
+        continue;
+      }
+      if (isInsufficientBalance(err)) throw err;
+      // Sync method unavailable / flaky: broadcast normally (ignore "already known"
+      // in case the sync call did broadcast) and poll for the receipt by hash.
+      await publicClient.sendRawTransaction({ serializedTransaction }).catch((e) => {
+        if (!isAlreadyKnown(e)) throw e;
+      });
+      return publicClient.waitForTransactionReceipt({
+        hash: keccak256(serializedTransaction),
+        pollingInterval: 100,
+        timeout: 20_000,
+      });
+    }
+  }
+}
 
 export async function writeWhizz<F extends WriteFn>(opts: {
   account: PrivateKeyAccount;
@@ -59,19 +119,36 @@ export async function writeWhizz<F extends WriteFn>(opts: {
       if (cacheable) gasCache.set(functionName, gas);
     }
 
-    const hash = await walletFor(account).sendTransaction({
-      account,
-      chain: monadTestnet,
+    const { maxFeePerGas, maxPriorityFeePerGas } = await getFees();
+    const nonce = await account.nonceManager!.consume({
+      address: account.address,
+      chainId: monadTestnet.id,
+      client: publicClient,
+    });
+    const signed = await account.signTransaction({
+      chainId: monadTestnet.id,
+      type: "eip1559",
       to: WHIZZ_ADDRESS,
       data,
-      value,
+      value: value ?? 0n,
       gas,
+      nonce,
+      maxFeePerGas,
+      maxPriorityFeePerGas,
     });
-    const receipt = await publicClient.waitForTransactionReceipt({ hash, pollingInterval: 100 });
+
+    let receipt: TransactionReceipt;
+    try {
+      receipt = await sendSigned(signed);
+    } catch (e) {
+      // The tx never made it on-chain, so its nonce is unused — resync from the chain.
+      account.nonceManager!.reset({ address: account.address, chainId: monadTestnet.id });
+      throw e;
+    }
     const latencyMs = Math.round(performance.now() - started);
 
     statsStore.resolvePending({
-      hash,
+      hash: receipt.transactionHash,
       label,
       latencyMs,
       gasUsed: receipt.gasUsed,

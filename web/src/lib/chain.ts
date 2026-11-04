@@ -23,7 +23,8 @@ export const monadTestnet = defineChain({
  */
 export const publicClient = createPublicClient({
   chain: monadTestnet,
-  transport: http(undefined, { batch: true }),
+  // No request batching: the public Monad RPC rejects batched JSON-RPC calls (HTTP 403).
+  transport: http(),
   pollingInterval: 250,
 });
 

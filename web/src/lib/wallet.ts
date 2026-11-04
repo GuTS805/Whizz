@@ -1,9 +1,7 @@
 "use client";
 
-import { createWalletClient, http, nonceManager, type PrivateKeyAccount, type WalletClient } from "viem";
+import { nonceManager, type PrivateKeyAccount } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-
-import { monadTestnet } from "./chain";
 
 const STORAGE_KEY = "whizz:burner-key";
 
@@ -27,8 +25,4 @@ export function loadOrCreateAccount(): PrivateKeyAccount {
 
 export function hasAccount(): boolean {
   return localStorage.getItem(STORAGE_KEY) !== null;
-}
-
-export function walletFor(account: PrivateKeyAccount): WalletClient {
-  return createWalletClient({ account, chain: monadTestnet, transport: http() });
 }

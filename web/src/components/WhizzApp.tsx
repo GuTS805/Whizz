@@ -5,7 +5,7 @@ import type { PrivateKeyAccount } from "viem";
 
 import { WHIZZ_ADDRESS } from "@/lib/chain";
 import { mon } from "@/lib/format";
-import { friendlyError, writeWhizz } from "@/lib/tx";
+import { friendlyError, warmUp, writeWhizz } from "@/lib/tx";
 import { requestDrip, useBalance } from "@/lib/useBalance";
 import { hasAccount, loadOrCreateAccount } from "@/lib/wallet";
 import { publicClient } from "@/lib/chain";
@@ -30,6 +30,7 @@ export function WhizzApp() {
   useEffect(() => {
     const rain = new URLSearchParams(window.location.search).get("rain");
     const boot = async () => {
+      warmUp(); // prefetch gas price so the first snap is fast
       if (rain && /^\d+$/.test(rain)) {
         setRainParam(BigInt(rain));
         setTab("rain");
