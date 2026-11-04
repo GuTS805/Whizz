@@ -230,7 +230,7 @@ function ShareRain({ id, onClose }: { id: bigint; onClose: () => void }) {
     return () => clearTimeout(t);
   }, [id]);
   return (
-    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-black/95 p-6" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-black/95 p-6 pt-safe-6" onClick={onClose}>
       <h2 className="text-3xl font-black text-whizz">Scan to catch 💧</h2>
       {url && (
         <div className="rounded-3xl bg-white p-4">

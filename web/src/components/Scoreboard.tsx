@@ -57,7 +57,7 @@ export function Scoreboard() {
       </button>
 
       {open && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/95 p-6 text-white" onClick={() => setOpen(false)}>
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/95 p-6 pt-safe-6 text-white" onClick={() => setOpen(false)}>
           <div className="mx-auto max-w-md" onClick={(e) => e.stopPropagation()}>
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-2xl font-black text-whizz">Monad Scoreboard</h2>

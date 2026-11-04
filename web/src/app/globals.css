@@ -13,3 +13,17 @@ body {
   overscroll-behavior: none;
   -webkit-tap-highlight-color: transparent;
 }
+
+/*
+ * Safe areas (status bar / gesture bar). The Android app (Capacitor) injects
+ * --safe-area-inset-*; browsers provide env(safe-area-inset-*). Use whichever exists.
+ */
+.safe-top {
+  padding-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+}
+.safe-bottom {
+  padding-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+}
+.pt-safe-6 {
+  padding-top: calc(var(--safe-area-inset-top, env(safe-area-inset-top, 0px)) + 1.5rem);
+}

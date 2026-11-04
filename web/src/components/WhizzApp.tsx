@@ -63,24 +63,26 @@ export function WhizzApp() {
 
   return (
     <main className="relative mx-auto flex h-dvh w-full max-w-md flex-col overflow-hidden bg-black text-white">
-      <header className="z-20 flex items-center justify-between px-4 pt-3 pb-2">
-        <div>
-          <div className="text-2xl font-black tracking-tight text-whizz">Whizz</div>
-          <div className="text-xs text-white/60">@{name}</div>
-        </div>
-        <div className="flex items-center gap-2">
-          <Scoreboard />
-          <button
-            onClick={async () => {
-              const err = await requestDrip(account.address);
-              if (err) alert(err);
-              void refresh();
-            }}
-            className="rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold"
-            title="Top up gas"
-          >
-            {balance === null ? "…" : `${mon(balance, 3)} MON`}
-          </button>
+      <header className="safe-top z-20">
+        <div className="flex items-center justify-between px-4 pt-3 pb-2">
+          <div>
+            <div className="text-2xl font-black tracking-tight text-whizz">Whizz</div>
+            <div className="text-xs text-white/60">@{name}</div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Scoreboard />
+            <button
+              onClick={async () => {
+                const err = await requestDrip(account.address);
+                if (err) alert(err);
+                void refresh();
+              }}
+              className="rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold"
+              title="Top up gas"
+            >
+              {balance === null ? "…" : `${mon(balance, 3)} MON`}
+            </button>
+          </div>
         </div>
       </header>
 
@@ -90,7 +92,7 @@ export function WhizzApp() {
         {tab === "rain" && <Rain account={account} focusRainId={rainParam} />}
       </section>
 
-      <nav className="z-20 grid grid-cols-3 border-t border-white/10 bg-black/90 pb-[env(safe-area-inset-bottom)]">
+      <nav className="z-20 grid grid-cols-3 border-t border-white/10 bg-black/90 safe-bottom">
         {(
           [
             ["inbox", "💬", "Snaps"],
