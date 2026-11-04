@@ -5,12 +5,12 @@ import type { Address } from "viem";
 
 import { publicClient } from "./chain";
 
-/** Live MON balance, refreshed every 2s and on demand. */
+/** Live MON balance, refreshed every 5s (skipped while the tab is hidden) and on demand. */
 export function useBalance(address: Address | undefined) {
   const [balance, setBalance] = useState<bigint | null>(null);
 
   const refresh = useCallback(async () => {
-    if (!address) return;
+    if (!address || document.hidden) return;
     try {
       setBalance(await publicClient.getBalance({ address }));
     } catch {
@@ -21,7 +21,7 @@ export function useBalance(address: Address | undefined) {
   useEffect(() => {
     if (!address) return;
     const first = setTimeout(refresh, 0);
-    const id = setInterval(refresh, 2000);
+    const id = setInterval(refresh, 5000);
     return () => {
       clearTimeout(first);
       clearInterval(id);
