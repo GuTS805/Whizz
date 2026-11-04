@@ -8,7 +8,7 @@ it — poof — it goes back to you.
 
 | | |
 | --- | --- |
-| 🌐 **Live app** | _coming soon_ |
+| 🌐 **Live app** | https://whizz-pink.vercel.app |
 | 📜 **Contract** | [`0x0f332f5a174f31c6c072844c658957212d3736d6`](https://testnet.monadexplorer.com/address/0x0f332f5a174f31c6c072844c658957212d3736d6) |
 | ⛓️ **Network** | Monad Testnet (chain ID `10143`) |
 
