@@ -5,14 +5,14 @@ import { parseEther, type PrivateKeyAccount } from "viem";
 
 import { WHIZZ_ADDRESS } from "@/lib/chain";
 import { mon } from "@/lib/format";
-import { friendlyError, warmUp, writeWhizz } from "@/lib/tx";
+import { estimateWhizzGas, friendlyError, warmUp, writeWhizz } from "@/lib/tx";
 import { requestDrip, useBalance } from "@/lib/useBalance";
 import { exportPrivateKey, hasAccount, importPrivateKey, loadOrCreateAccount, normalizePrivateKey } from "@/lib/wallet";
 import { publicClient } from "@/lib/chain";
 import { whizzAbi } from "@/lib/abi";
 import { encryptionPublicKey } from "@/lib/crypto";
 import { useWhizzEvents } from "@/lib/events";
-import { getEncryptionKey } from "@/lib/whizz";
+import { addressForName, getEncryptionKey } from "@/lib/whizz";
 
 import { Camera } from "./Camera";
 import { Friends } from "./Friends";
@@ -25,6 +25,32 @@ type Tab = "camera" | "chat" | "rain" | "friends";
 
 /** Enough MON to register comfortably (the gas limit is reserved up front on Monad). */
 const MIN_SIGNUP_BALANCE = parseEther("0.05");
+
+/**
+ * Create this device's wallet and top it up from the faucet — once. Onboarding
+ * starts this on the first keystroke and "Let's go" just awaits the same promise.
+ * Tops up whenever the wallet is LOW, not just empty: a wallet left over from an
+ * earlier sign-up can hold a little MON that isn't enough (the server re-checks).
+ */
+let funding: { address: string; promise: Promise<PrivateKeyAccount> } | null = null;
+function fundWallet(): Promise<PrivateKeyAccount> {
+  const acc = loadOrCreateAccount();
+  if (funding?.address === acc.address) return funding.promise;
+  const promise = (async () => {
+    const bal = await publicClient.getBalance({ address: acc.address });
+    if (bal < MIN_SIGNUP_BALANCE) {
+      const err = await requestDrip(acc.address);
+      if (err) throw new Error(`Couldn't get gas: ${err}`);
+    }
+    return acc;
+  })();
+  const entry = { address: acc.address, promise };
+  funding = entry;
+  promise.catch(() => {
+    if (funding === entry) funding = null; // failed → the next try starts fresh
+  });
+  return promise;
+}
 
 export function WhizzApp() {
   const [account, setAccount] = useState<PrivateKeyAccount | null>(null);
@@ -224,7 +250,30 @@ function Onboarding({ onDone }: { onDone: (acc: PrivateKeyAccount, name: string)
   const [notice, setNotice] = useState<string | null>(null);
   const [restoring, setRestoring] = useState(false);
   const [keyInput, setKeyInput] = useState("");
+  const [taken, setTaken] = useState(false);
   const valid = /^[a-z0-9_]{3,20}$/.test(input);
+
+  // Live "name taken?" check + gas estimate for sign-up, once typing pauses.
+  useEffect(() => {
+    if (!valid) return;
+    let cancelled = false; // a slow answer for "abc" must not mark "abcd" as taken
+    const t = setTimeout(async () => {
+      const owner = await addressForName(input).catch(() => null);
+      if (cancelled) return;
+      if (owner) return setTaken(true);
+      const acc = loadOrCreateAccount();
+      // Cached inside estimateWhizzGas, so "Let's go" can skip this round trip.
+      void estimateWhizzGas({
+        account: acc,
+        functionName: "register",
+        args: [input, encryptionPublicKey(exportPrivateKey()!)],
+      }).catch(() => {});
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [input, valid]);
 
   // Bring back a backed-up wallet (from Wallet → "Show private key").
   const restore = async () => {
@@ -301,19 +350,10 @@ function Onboarding({ onDone }: { onDone: (acc: PrivateKeyAccount, name: string)
   const go = async () => {
     setError(null);
     try {
-      // 1. Create a wallet right here in the browser — no app, no seed phrase.
-      const acc = loadOrCreateAccount();
-      // 2. Get a little gas money from our faucet route.
+      // Usually already done while you were typing (see onType) — then this is instant.
       setStatus("Getting you some gas ⛽");
-      // Top up whenever the wallet is LOW, not just empty — a wallet left over
-      // from an earlier sign-up can have a little MON that isn't enough to register.
-      // (The server only sends to wallets that really are low.)
-      const bal = await publicClient.getBalance({ address: acc.address });
-      if (bal < MIN_SIGNUP_BALANCE) {
-        const err = await requestDrip(acc.address);
-        if (err) throw new Error(`Couldn't get gas: ${err}`);
-      }
-      // 3. Claim the username + publish the key private snaps are encrypted to (one tx).
+      const acc = await fundWallet();
+      // Claim the username + publish the key private snaps are encrypted to (one tx).
       setStatus("Claiming your name on Monad ⚡");
       const pubKey = encryptionPublicKey(exportPrivateKey()!);
       await writeWhizz({ account: acc, functionName: "register", args: [input, pubKey], label: "register" });
@@ -322,6 +362,15 @@ function Onboarding({ onDone }: { onDone: (acc: PrivateKeyAccount, name: string)
       setError(friendlyError(e));
       setStatus(null);
     }
+  };
+
+  const onType = (value: string) => {
+    setInput(value);
+    setTaken(false);
+    // Start getting gas on the first keystroke, not on "Let's go": fresh funds
+    // need a moment before Monad lets you spend them, and that moment now passes
+    // while you're still typing.
+    if (value) void fundWallet().catch(() => {}); // a failure is retried (and shown) on "Let's go"
   };
 
   return (
@@ -335,19 +384,20 @@ function Onboarding({ onDone }: { onDone: (acc: PrivateKeyAccount, name: string)
         <input
           autoFocus
           value={input}
-          onChange={(e) => setInput(e.target.value.toLowerCase())}
+          onChange={(e) => onType(e.target.value.toLowerCase())}
           placeholder="pick a username"
           maxLength={20}
           className="ml-1 flex-1 bg-transparent outline-none"
         />
       </label>
       <button
-        disabled={!valid || status !== null}
+        disabled={!valid || taken || status !== null}
         onClick={go}
         className="rounded-2xl bg-whizz py-4 text-lg font-bold text-black disabled:opacity-40"
       >
         {status ?? "Let's go ⚡"}
       </button>
+      {taken && !status && <p className="text-center text-sm text-red-400">@{input} is taken 😬 — try another</p>}
       {notice && <p className="text-center text-sm text-whizz">{notice}</p>}
       {error && <p className="text-center text-sm text-red-400">{error}</p>}
       <p className="text-center text-xs text-white/40">A wallet is created on this device. Testnet only.</p>

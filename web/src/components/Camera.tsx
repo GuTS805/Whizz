@@ -1,11 +1,20 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { hexToBytes, parseEther, type Address, type Hex, type PrivateKeyAccount } from "viem";
+import {
+  BaseError,
+  ContractFunctionRevertedError,
+  hexToBytes,
+  parseEther,
+  type Address,
+  type Hex,
+  type PrivateKeyAccount,
+} from "viem";
 
 import { BADGE_TEXT, FILTERS, filterCss, supportsCanvasFilters, timeLabel, type FilterId, type Overlays } from "@/lib/filters";
 import { captureFrame } from "@/lib/image";
-import { friendlyError, writeWhizz } from "@/lib/tx";
+import { outbox } from "@/lib/outbox";
+import { estimateWhizzGas, friendlyError, writeWhizz } from "@/lib/tx";
 import { encryptSnap } from "@/lib/crypto";
 import { addressForName, getEncryptionKey, listFriends, type FriendView } from "@/lib/whizz";
 
@@ -203,37 +212,66 @@ function Compose({
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Do the slow lookups WHILE the user is still composing, so Send is instant.
+  const prepRef = useRef<{ key: string; promise: Promise<Prepared> } | null>(null);
+  const prepare = useCallback(
+    (name: string, value: bigint) => {
+      const k = `${name}|${value}`; // the estimate also checks you can afford the amount
+      if (prepRef.current?.key !== k) {
+        const known = friends.find((f) => f.name === name)?.address;
+        prepRef.current = { key: k, promise: prepareSnap(account, name, known, value, shot.hex) };
+      }
+      return prepRef.current.promise;
+    },
+    [account, friends, shot.hex],
+  );
+  useEffect(() => {
+    if (to.length < 3) return;
+    // Wait for typing to pause; friend chips set the full name at once.
+    const t = setTimeout(() => void prepare(to, parseEther(amount)), 300);
+    return () => clearTimeout(t);
+  }, [to, amount, prepare]);
+
   const send = async () => {
     setError(null);
-    try {
-      setBusy("Finding @" + to);
-      const recipient = await addressForName(to);
-      if (!recipient) throw new Error(`No one called @${to} yet`);
-
-      // Private snap: encrypt photo + caption to the recipient's key, so the
-      // chain only stores ciphertext. (Every Whizz sign-up publishes a key.)
-      const key = await getEncryptionKey(recipient);
-      if (!key && !window.confirm(`@${to} hasn't enabled private snaps yet. Send this snap unencrypted (anyone could view it)?`)) {
-        setBusy(null);
-        return;
-      }
-      setBusy(key ? "Encrypting 🔒" : "Whizzing ⚡");
+    setBusy("Whizzing ⚡");
+    const value = parseEther(amount);
+    let prep = await prepare(to, value);
+    if (prep.error) {
+      // It may have been fixed since (e.g. you just got gas) — check once more.
+      prepRef.current = null;
+      prep = await prepare(to, value);
+    }
+    if (prep.error || !prep.recipient) {
+      setError(prep.error ?? `No one called @${to} yet`);
+      setBusy(null);
+      return;
+    }
+    // Private snap: encrypt photo + caption to the recipient's key, so the
+    // chain only stores ciphertext. (Every Whizz sign-up publishes a key.)
+    if (!prep.key && !window.confirm(`@${to} hasn't enabled private snaps yet. Send this snap unencrypted (anyone could view it)?`)) {
+      setBusy(null);
+      return;
+    }
+    const { recipient, key, gas, baseBytes } = prep;
+    outbox.send(recipient, value, async () => {
       const payload = key ? await encryptSnap(key, caption, hexToBytes(shot.hex)) : shot.hex;
-
-      setBusy("Whizzing ⚡");
-      await writeWhizz({
+      // Encrypted snaps carry the caption inside the ciphertext, not in the clear.
+      const clearCaption = key ? "" : caption;
+      // The gas was estimated without the caption — add room for its bytes
+      // (calldata + event log ≈ 24 gas/byte; 40 leaves margin on top of the 15% buffer).
+      const extra = BigInt(payloadBytes(payload) + utf8Bytes(clearCaption) - baseBytes);
+      return writeWhizz({
         account,
         functionName: "sendSnap",
-        // Encrypted snaps carry the caption inside the ciphertext, not in the clear.
-        args: [recipient, timer, key ? "" : caption, payload],
-        value: parseEther(amount),
+        args: [recipient, timer, clearCaption, payload],
+        value,
+        gas: gas ? gas + (extra > 0n ? extra * 40n : 0n) : undefined,
         label: "sendSnap",
       });
-      onSent({ address: recipient, name: to });
-    } catch (e) {
-      setError(friendlyError(e));
-      setBusy(null);
-    }
+    });
+    // Don't wait for Monad — open the chat now; it shows the snap as "Sending ⚡".
+    onSent({ address: recipient, name: to });
   };
 
   return (
@@ -301,6 +339,55 @@ function Compose({
       </div>
     </div>
   );
+}
+
+type Prepared = { recipient?: Address; key?: Hex | null; gas?: bigint; baseBytes: number; error?: string };
+
+const payloadBytes = (hex: Hex) => (hex.length - 2) / 2;
+const utf8Bytes = (s: string) => new TextEncoder().encode(s).length;
+
+/**
+ * Everything a snap needs before it can be signed: the friend's address, their
+ * encryption key, and a gas limit (Monad bills the limit, so we estimate it).
+ * That's 2–3 network round trips — done in the background while composing.
+ */
+async function prepareSnap(
+  account: PrivateKeyAccount,
+  name: string,
+  knownAddress: Address | undefined,
+  value: bigint,
+  imageHex: Hex,
+): Promise<Prepared> {
+  let recipient: Address | null | undefined;
+  let key: Hex | null | undefined;
+  try {
+    recipient = knownAddress ?? (await addressForName(name));
+    if (!recipient) return { baseBytes: 0, error: `No one called @${name} yet` };
+    key = await getEncryptionKey(recipient);
+    // Same shape as the real snap, minus the caption (added at send time).
+    const sample = key ? await encryptSnap(key, "", hexToBytes(imageHex)) : imageHex;
+    const baseBytes = payloadBytes(sample);
+    try {
+      const gas = await estimateWhizzGas({
+        account,
+        functionName: "sendSnap",
+        args: [recipient, TIMERS[0].secs, "", sample], // the timer doesn't change the cost
+        value,
+      });
+      return { recipient, key, gas, baseBytes };
+    } catch (e) {
+      // The contract said no (blocked, friends-only…) or the money isn't there: tell the user now.
+      const reverted = e instanceof BaseError && e.walk((x) => x instanceof ContractFunctionRevertedError);
+      if (/insufficient (funds|balance)/i.test(String(e))) {
+        return { recipient, key, baseBytes, error: value > 0n ? "Not enough MON for this snap 💸 — tap 👛" : friendlyError(e) };
+      }
+      if (reverted) return { recipient, key, baseBytes, error: friendlyError(e) };
+      // Just a network hiccup — send anyway; writeWhizz will estimate itself.
+      return { recipient, key, baseBytes };
+    }
+  } catch (e) {
+    return { baseBytes: 0, error: friendlyError(e) };
+  }
 }
 
 function Chips({

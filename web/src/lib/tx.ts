@@ -21,10 +21,12 @@ type WriteFn = ContractFunctionName<typeof whizzAbi, "nonpayable" | "payable">;
 /**
  * Monad charges the gas LIMIT you set, not the gas you actually use.
  * So instead of a generous default limit we estimate, add a small safety
- * buffer, and cache it per function (except sendSnap, whose cost depends on
- * the photo size).
+ * buffer, and cache it per function — except where the cost varies per call:
+ * sendSnap (photo size) and sendMessage (text length, and a chat's FIRST
+ * message costs ~2.5× more because it creates the conversation).
  */
 const gasCache = new Map<string, bigint>();
+const VARIABLE_GAS = new Set<string>(["sendSnap", "sendMessage"]);
 const BUFFER_PCT = 115n;
 
 /**
@@ -159,37 +161,55 @@ async function signAndSend(opts: {
   return receipt;
 }
 
-export async function writeWhizz<F extends WriteFn>(opts: {
+type WriteOpts<F extends WriteFn> = {
   account: PrivateKeyAccount;
   functionName: F;
   args: ContractFunctionArgs<typeof whizzAbi, "nonpayable" | "payable", F>;
   value?: bigint;
-  label?: string;
-}): Promise<TransactionReceipt> {
+};
+
+/**
+ * Simulate the call and return a gas limit (estimate + buffer). A revert
+ * (e.g. "NameTaken") throws here, before anything is paid. Screens call this
+ * AHEAD of time (while you're still typing / picking a friend) so tapping
+ * Send only has to sign and send: one network round trip instead of two.
+ */
+export async function estimateWhizzGas<F extends WriteFn>(opts: WriteOpts<F>): Promise<bigint> {
+  if (!WHIZZ_ADDRESS) throw new WhizzTxError("Contract not deployed yet — run the deploy script.");
+  const { account, functionName, args, value } = opts;
+  const cacheable = !VARIABLE_GAS.has(functionName);
+  const hit = cacheable ? gasCache.get(functionName) : undefined;
+  if (hit) return hit;
+  const estimate = await publicClient.estimateContractGas({
+    address: WHIZZ_ADDRESS,
+    abi: whizzAbi,
+    functionName,
+    args,
+    account,
+    value,
+  } as never);
+  const gas = (estimate * BUFFER_PCT) / 100n;
+  if (cacheable) gasCache.set(functionName, gas);
+  return gas;
+}
+
+export async function writeWhizz<F extends WriteFn>(
+  opts: WriteOpts<F> & {
+    label?: string;
+    /** A gas limit estimated earlier (see estimateWhizzGas) — skips the estimate round trip. */
+    gas?: bigint;
+  },
+): Promise<TransactionReceipt> {
   if (!WHIZZ_ADDRESS) throw new WhizzTxError("Contract not deployed yet — run the deploy script.");
   const { account, functionName, args, value, label = functionName } = opts;
 
   const data = encodeFunctionData({ abi: whizzAbi, functionName, args } as never);
-  const cacheable = functionName !== "sendSnap";
 
   statsStore.addPending();
   const started = performance.now();
   let resolved = false;
   try {
-    let gas = cacheable ? gasCache.get(functionName) : undefined;
-    if (!gas) {
-      // estimateGas simulates the call, so a revert (e.g. "SnapExpired") surfaces here, before paying.
-      const estimate = await publicClient.estimateContractGas({
-        address: WHIZZ_ADDRESS,
-        abi: whizzAbi,
-        functionName,
-        args,
-        account,
-        value,
-      } as never);
-      gas = (estimate * BUFFER_PCT) / 100n;
-      if (cacheable) gasCache.set(functionName, gas);
-    }
+    const gas = opts.gas ?? (await estimateWhizzGas(opts));
     resolved = true; // signAndSend records the stats from here on
     return await signAndSend({ account, to: WHIZZ_ADDRESS, data, value, gas, label, started });
   } catch (err) {

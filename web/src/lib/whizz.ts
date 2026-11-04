@@ -93,10 +93,19 @@ export async function listFriendRequests(user: Address, myFriends: Address[]): P
   return Promise.all(pending.map(async (address) => ({ address, name: await nameOf(address), mutual: false })));
 }
 
-/** The 64-byte key a user's snaps are encrypted to, or null if they never published one. */
+/**
+ * The 64-byte key a user's snaps are encrypted to, or null if they never published one.
+ * The contract only accepts the key derived from the user's own wallet, so once
+ * published it never changes — safe to cache (saves a round trip per message).
+ */
+const keyCache = new Map<string, Hex>();
 export async function getEncryptionKey(user: Address): Promise<Hex | null> {
+  const hit = keyCache.get(user.toLowerCase());
+  if (hit) return hit;
   const key = await publicClient.readContract({ ...base(), functionName: "encryptionKey", args: [user] });
-  return key && key !== "0x" ? key : null;
+  if (!key || key === "0x") return null;
+  keyCache.set(user.toLowerCase(), key);
+  return key;
 }
 
 export async function getFriendsOnly(user: Address): Promise<boolean> {

@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Address, PrivateKeyAccount } from "viem";
 
 import { isUnread, listChats, loadChat, markSeen, MAX_MESSAGE_TEXT_BYTES, type ChatEntry, type ChatSummary } from "@/lib/chat";
 import { encryptionPublicKey, encryptMessage } from "@/lib/crypto";
 import { useWhizzEvents, type WhizzLog } from "@/lib/events";
 import { mon, nowSec, timeLeft } from "@/lib/format";
+import { outbox, useOutbox } from "@/lib/outbox";
 import { friendlyError, writeWhizz } from "@/lib/tx";
 import { exportPrivateKey } from "@/lib/wallet";
 import { getEncryptionKey, listFriends, type FriendView, type SnapView } from "@/lib/whizz";
@@ -163,10 +164,25 @@ export function ChatThread({
     return () => clearInterval(id);
   }, []);
 
+  // Snaps you just sent from the camera, still on their way to Monad.
+  // (memoized: a fresh array every render would re-run the effect below each time)
+  const allOutgoing = useOutbox();
+  const outgoing = useMemo(() => allOutgoing.filter((s) => lower(s.to) === them), [allOutgoing, them]);
+
+  // Once Monad confirms a snap, load it from the chain, then drop the placeholder
+  // (in that order, so the bubble never blinks out).
+  useEffect(() => {
+    const done = outgoing.filter((s) => s.status === "sent");
+    if (done.length === 0) return;
+    void load()
+      .catch(() => {})
+      .finally(() => done.forEach((s) => outbox.remove(s.id)));
+  }, [outgoing, load]);
+
   // Keep the newest message in view.
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
-  }, [entries, pending]);
+  }, [entries, pending, outgoing.length]);
 
   useWhizzEvents((logs) => {
     // Snaps already in this chat — so we only react to unwraps/refunds of THESE snaps,
@@ -237,7 +253,7 @@ export function ChatThread({
 
       <div className="flex-1 space-y-2 overflow-y-auto px-3 py-4">
         {entries === null && <p className="text-center text-white/50">Loading…</p>}
-        {entries?.length === 0 && pending.length === 0 && (
+        {entries?.length === 0 && pending.length === 0 && outgoing.length === 0 && (
           <p className="pt-10 text-center text-white/50">Say hi to @{partner.name} 👋</p>
         )}
         {entries?.map((e) =>
@@ -257,6 +273,30 @@ export function ChatThread({
             />
           ),
         )}
+        {outgoing.map((s) => (
+          <div key={`snap-${s.id}`} className="flex flex-col items-end">
+            <div
+              className={`max-w-[78%] rounded-2xl border border-whizz/50 bg-whizz/10 px-4 py-3 text-sm font-semibold ${
+                s.status === "failed" ? "" : "animate-pulse"
+              }`}
+            >
+              {s.amount > 0n ? `🎁 Snap · ${mon(s.amount)} MON` : "📸 Snap"}
+            </div>
+            {s.status === "failed" ? (
+              <span className="mt-0.5 flex items-center gap-2 text-[11px] text-red-400">
+                Not sent: {s.error}
+                <button onClick={() => outbox.retry(s.id)} className="rounded-full bg-white/10 px-2 py-0.5 text-white">
+                  Retry
+                </button>
+                <button onClick={() => outbox.remove(s.id)} className="text-white/60" aria-label="Discard snap">
+                  ✕
+                </button>
+              </span>
+            ) : (
+              <span className="mt-0.5 text-[11px] text-white/40">Sending ⚡</span>
+            )}
+          </div>
+        ))}
         {pending.map((p) => (
           <div key={p.id} className="flex flex-col items-end">
             <Bubble mine dim={!p.failed}>
