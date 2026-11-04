@@ -9,7 +9,7 @@ it — poof — it goes back to you.
 | | |
 | --- | --- |
 | 🌐 **Live app** | _coming soon_ |
-| 📜 **Contract** | [`0xa6cdb1cc4815183188287cff1b50129e88e4ec83`](https://testnet.monadexplorer.com/address/0xa6cdb1cc4815183188287cff1b50129e88e4ec83) |
+| 📜 **Contract** | [`0x0f332f5a174f31c6c072844c658957212d3736d6`](https://testnet.monadexplorer.com/address/0x0f332f5a174f31c6c072844c658957212d3736d6) |
 | ⛓️ **Network** | Monad Testnet (chain ID `10143`) |
 
 ## Why Monad
