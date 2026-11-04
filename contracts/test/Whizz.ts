@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { network } from "hardhat";
-import { parseEther, toHex } from "viem";
+import { getAddress, parseEther, toHex } from "viem";
 
 // Each `it` block deploys a fresh contract, so tests never affect each other.
 describe("Whizz", async function () {
@@ -190,4 +190,78 @@ describe("Whizz", async function () {
         [1n, alice.account.address, 0n]);
     });
   });
+
+  // ──────────────────────────── Friends ────────────────────────────
+  describe("friends", function () {
+    // Alice, Bob, Carol and Dave all have usernames.
+    async function deployWithNames() {
+      const d = await deploy();
+      await d.whizz.write.setName(["alice"]);
+      await d.asBob.write.setName(["bob"]);
+      await d.asCarol.write.setName(["carol"]);
+      await d.asDave.write.setName(["dave"]);
+      return d;
+    }
+    const A = () => alice.account.address;
+    const B = () => bob.account.address;
+    const C = () => carol.account.address;
+    const D = () => dave.account.address;
+    // Compare address lists case-insensitively and order-independently.
+    const same = (got: readonly string[], want: string[]) =>
+      assert.deepEqual([...got].map((a) => a.toLowerCase()).sort(), want.map((a) => a.toLowerCase()).sort());
+
+    it("adds friends and records who added whom", async function () {
+      const { whizz, asBob } = await deployWithNames();
+      await viem.assertions.emitWithArgs(whizz.write.addFriend([B()]), whizz, "FriendAdded", [getAddr(A()), getAddr(B())]);
+      await whizz.write.addFriend([C()]);
+
+      same(await whizz.read.friendsOf([A()]), [B(), C()]);
+      assert.equal(await whizz.read.isFriend([A(), B()]), true);
+      assert.equal(await whizz.read.isFriend([B(), A()]), false); // one-way until Bob adds back
+      same(await whizz.read.addedBy([B(), 0n, 10n]), [A()]);
+      assert.equal(await whizz.read.addedByLength([B()]), 1n);
+
+      await asBob.write.addFriend([A()]); // add back → mutual
+      assert.equal(await whizz.read.isFriend([B(), A()]), true);
+    });
+
+    it("rejects self, unnamed users, zero address and duplicates", async function () {
+      const { whizz } = await deployWithNames();
+      await viem.assertions.revertWithCustomError(whizz.write.addFriend([A()]), whizz, "InvalidRecipient");
+      await viem.assertions.revertWithCustomError(
+        whizz.write.addFriend(["0x0000000000000000000000000000000000000000"]), whizz, "InvalidRecipient");
+      await viem.assertions.revertWithCustomError(
+        whizz.write.addFriend(["0x00000000000000000000000000000000000000aa"]), whizz, "NoSuchUser");
+      await whizz.write.addFriend([B()]);
+      await viem.assertions.revertWithCustomError(whizz.write.addFriend([B()]), whizz, "AlreadyFriends");
+      await viem.assertions.revertWithCustomError(whizz.write.removeFriend([C()]), whizz, "NotFriends");
+    });
+
+    it("removes the middle, last and only friend correctly (swap-and-pop)", async function () {
+      const { whizz } = await deployWithNames();
+      await whizz.write.addFriend([B()]);
+      await whizz.write.addFriend([C()]);
+      await whizz.write.addFriend([D()]);
+
+      await viem.assertions.emitWithArgs(whizz.write.removeFriend([C()]), whizz, "FriendRemoved", [getAddr(A()), getAddr(C())]); // middle
+      same(await whizz.read.friendsOf([A()]), [B(), D()]);
+      assert.equal(await whizz.read.isFriend([A(), C()]), false);
+      assert.equal(await whizz.read.isFriend([A(), D()]), true); // moved, still a friend
+
+      await whizz.write.removeFriend([D()]); // last
+      same(await whizz.read.friendsOf([A()]), [B()]);
+      await whizz.write.removeFriend([B()]); // only
+      same(await whizz.read.friendsOf([A()]), []);
+
+      // Can re-add after removing, and "added by" isn't duplicated.
+      await whizz.write.addFriend([C()]);
+      same(await whizz.read.friendsOf([A()]), [C()]);
+      assert.equal(await whizz.read.addedByLength([C()]), 1n);
+    });
+  });
 });
+
+/** Checksummed form, matching how event args are decoded. */
+function getAddr(a: string): `0x${string}` {
+  return getAddress(a);
+}

@@ -5,7 +5,7 @@ import { parseEther, type Hex, type PrivateKeyAccount } from "viem";
 
 import { captureFrame } from "@/lib/image";
 import { friendlyError, writeWhizz } from "@/lib/tx";
-import { addressForName } from "@/lib/whizz";
+import { addressForName, listFriends, type FriendView } from "@/lib/whizz";
 
 const AMOUNTS = ["0", "0.01", "0.05", "0.1"] as const;
 const TIMERS = [
@@ -14,7 +14,16 @@ const TIMERS = [
   { label: "24 h", secs: 86400n },
 ] as const;
 
-export function Camera({ account, onSent }: { account: PrivateKeyAccount; onSent: () => void }) {
+export function Camera({
+  account,
+  presetTo,
+  onSent,
+}: {
+  account: PrivateKeyAccount;
+  /** Friend chosen from the Friends tab ("📸 Snap"), pre-selected as recipient. */
+  presetTo: string | null;
+  onSent: () => void;
+}) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [facing, setFacing] = useState<"user" | "environment">("user");
   const [camError, setCamError] = useState<string | null>(null);
@@ -48,7 +57,9 @@ export function Camera({ account, onSent }: { account: PrivateKeyAccount; onSent
     setShot(await captureFrame(v, facing === "user"));
   }, [facing]);
 
-  if (shot) return <Compose account={account} shot={shot} onCancel={() => setShot(null)} onSent={onSent} />;
+  if (shot) {
+    return <Compose account={account} shot={shot} presetTo={presetTo} onCancel={() => setShot(null)} onSent={onSent} />;
+  }
 
   return (
     <div className="absolute inset-0 bg-neutral-900">
@@ -59,6 +70,11 @@ export function Camera({ account, onSent }: { account: PrivateKeyAccount; onSent
         muted
         className={`h-full w-full object-cover ${facing === "user" ? "-scale-x-100" : ""}`}
       />
+      {presetTo && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 rounded-full bg-black/60 px-4 py-1.5 text-sm">
+          Snapping <span className="font-bold text-whizz">@{presetTo}</span>
+        </div>
+      )}
       {(camError || !camSupported) && (
         <p className="absolute inset-x-6 top-1/3 text-center text-white/80">
           {camSupported ? camError : "Camera needs https on phones."}
@@ -86,15 +102,31 @@ export function Camera({ account, onSent }: { account: PrivateKeyAccount; onSent
 function Compose({
   account,
   shot,
+  presetTo,
   onCancel,
   onSent,
 }: {
   account: PrivateKeyAccount;
   shot: { hex: Hex; url: string };
+  presetTo: string | null;
   onCancel: () => void;
   onSent: () => void;
 }) {
-  const [to, setTo] = useState("");
+  const [to, setTo] = useState(presetTo ?? "");
+  const [friends, setFriends] = useState<FriendView[]>([]);
+
+  // Friends as one-tap recipients (mutual friends first).
+  useEffect(() => {
+    let cancelled = false;
+    listFriends(account.address)
+      .then((f) => {
+        if (!cancelled) setFriends(f.sort((a, b) => Number(b.mutual) - Number(a.mutual) || a.name.localeCompare(b.name)));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [account.address]);
   const [caption, setCaption] = useState("");
   const [amount, setAmount] = useState<string>("0.01");
   const [timer, setTimer] = useState<bigint>(TIMERS[0].secs);
@@ -151,6 +183,19 @@ function Compose({
           value={timer.toString()}
           onChange={(v) => setTimer(BigInt(v))}
         />
+        {friends.length > 0 && (
+          <div className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1">
+            {friends.map((f) => (
+              <button
+                key={f.address}
+                onClick={() => setTo(f.name)}
+                className={`shrink-0 rounded-full px-3 py-1.5 text-sm ${to === f.name ? "bg-whizz font-bold text-black" : "bg-white/10"}`}
+              >
+                @{f.name}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="flex gap-2">
           <label className="flex flex-1 items-center rounded-xl bg-white/10 px-3">
             <span className="text-white/50">@</span>

@@ -268,4 +268,8 @@ const ERROR_TEXT: Record<string, string> = {
   CannotCatchOwnRain: "Can't catch your own rain",
   RainStillActive: "Rain is still going",
   TransferFailed: "Transfer failed",
+  NoSuchUser: "No Whizz user with that name",
+  AlreadyFriends: "You're already friends 🤝",
+  NotFriends: "You're not friends",
+  TooManyFriends: "Friend list is full (500 max)",
 };

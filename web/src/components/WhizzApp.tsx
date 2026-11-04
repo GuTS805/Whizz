@@ -12,12 +12,13 @@ import { publicClient } from "@/lib/chain";
 import { whizzAbi } from "@/lib/abi";
 
 import { Camera } from "./Camera";
+import { Friends } from "./Friends";
 import { Inbox } from "./Inbox";
 import { Rain } from "./Rain";
 import { Scoreboard } from "./Scoreboard";
 import { Wallet } from "./Wallet";
 
-type Tab = "camera" | "inbox" | "rain";
+type Tab = "camera" | "inbox" | "rain" | "friends";
 
 export function WhizzApp() {
   const [account, setAccount] = useState<PrivateKeyAccount | null>(null);
@@ -25,17 +26,25 @@ export function WhizzApp() {
   const [ready, setReady] = useState(false);
   const [tab, setTab] = useState<Tab>("camera");
   const [rainParam, setRainParam] = useState<bigint | null>(null);
+  const [addParam, setAddParam] = useState<string | null>(null);
+  const [snapTo, setSnapTo] = useState<string | null>(null);
   const [walletOpen, setWalletOpen] = useState(false);
   const { balance, refresh } = useBalance(account?.address);
 
   // On first load: restore the burner wallet (if any) and its username.
   useEffect(() => {
-    const rain = new URLSearchParams(window.location.search).get("rain");
+    const params = new URLSearchParams(window.location.search);
+    const rain = params.get("rain");
+    const add = params.get("add")?.toLowerCase() ?? null;
     const boot = async () => {
       warmUp(); // prefetch gas price so the first snap is fast
       if (rain && /^\d+$/.test(rain)) {
         setRainParam(BigInt(rain));
         setTab("rain");
+      } else if (add && /^[a-z0-9_]{3,20}$/.test(add)) {
+        // Invite link (?add=name) → open Friends with the name filled in.
+        setAddParam(add);
+        setTab("friends");
       }
       if (hasAccount() && WHIZZ_ADDRESS) {
         const acc = loadOrCreateAccount();
@@ -85,22 +94,46 @@ export function WhizzApp() {
       </header>
 
       <section className="relative flex-1 overflow-hidden">
-        {tab === "camera" && <Camera account={account} onSent={() => setTab("inbox")} />}
+        {tab === "camera" && (
+          <Camera
+            account={account}
+            presetTo={snapTo}
+            onSent={() => {
+              setSnapTo(null);
+              setTab("inbox");
+            }}
+          />
+        )}
         {tab === "inbox" && <Inbox account={account} />}
         {tab === "rain" && <Rain account={account} focusRainId={rainParam} />}
+        {tab === "friends" && (
+          <Friends
+            account={account}
+            myName={name}
+            prefillAdd={addParam}
+            onSnap={(friendName) => {
+              setSnapTo(friendName);
+              setTab("camera");
+            }}
+          />
+        )}
       </section>
 
-      <nav className="z-20 grid grid-cols-3 border-t border-white/10 bg-black/90 safe-bottom">
+      <nav className="z-20 grid grid-cols-4 border-t border-white/10 bg-black/90 safe-bottom">
         {(
           [
             ["inbox", "💬", "Snaps"],
             ["camera", "📸", "Camera"],
+            ["friends", "👥", "Friends"],
             ["rain", "🌧️", "Rain"],
           ] as const
         ).map(([id, icon, label]) => (
           <button
             key={id}
-            onClick={() => setTab(id)}
+            onClick={() => {
+              if (id !== "camera") setSnapTo(null); // leaving the camera clears a preset friend
+              setTab(id);
+            }}
             className={`flex flex-col items-center py-2.5 text-xs ${tab === id ? "text-whizz" : "text-white/50"}`}
           >
             <span className="text-xl">{icon}</span>

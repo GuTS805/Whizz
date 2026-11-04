@@ -54,6 +54,16 @@ contract Whizz {
     mapping(address => uint256[]) private _inbox;
     mapping(address => uint256[]) private _outbox;
 
+    /// @dev Friends are one-way "adds" (like following); mutual = both added each other.
+    ///      Stored by address, so renaming never breaks a friendship.
+    mapping(address => address[]) private _friends;
+    /// @dev user => friend => 1-based position in _friends[user] (0 = not a friend).
+    mapping(address => mapping(address => uint256)) private _friendSlot;
+    /// @dev Everyone who has added `user`, so the app can show "added you — add back?".
+    mapping(address => address[]) private _addedBy;
+    mapping(address => mapping(address => bool)) private _inAddedBy;
+    uint256 public constant MAX_FRIENDS = 500;
+
     // ─────────────────────────────── Events ──────────────────────────────
     // Events are cheap on-chain logs. The app listens to them live over
     // WebSocket — this is how a snap "pops up" on your friend's phone.
@@ -75,6 +85,8 @@ contract Whizz {
     event RainStarted(uint256 indexed id, address indexed from, uint256 perDrop, uint32 drops, uint64 expiresAt, string caption);
     event DropCaught(uint256 indexed id, address indexed catcher, uint256 amount, uint32 caught);
     event RainEnded(uint256 indexed id, address indexed from, uint256 refunded);
+    event FriendAdded(address indexed user, address indexed friend);
+    event FriendRemoved(address indexed user, address indexed friend);
 
     // ─────────────────────────────── Errors ──────────────────────────────
     // Custom errors are cheaper than revert strings and easy to decode in the app.
@@ -96,6 +108,10 @@ contract Whizz {
     error CannotCatchOwnRain();
     error RainStillActive();
     error TransferFailed();
+    error NoSuchUser();
+    error AlreadyFriends();
+    error NotFriends();
+    error TooManyFriends();
 
     // ─────────────────────────────── Names ───────────────────────────────
 
@@ -261,6 +277,65 @@ contract Whizz {
         uint256 refund = uint256(r.drops - r.caught) * r.perDrop;
         emit RainEnded(id, r.from, refund);
         if (refund > 0) _send(r.from, refund);
+    }
+
+    // ────────────────────────────── Friends ──────────────────────────────
+
+    /// @notice Add someone as a friend. They must have a Whizz username.
+    function addFriend(address friend) external {
+        if (friend == address(0) || friend == msg.sender) revert InvalidRecipient();
+        if (bytes(nameOf[friend]).length == 0) revert NoSuchUser();
+        if (_friendSlot[msg.sender][friend] != 0) revert AlreadyFriends();
+        address[] storage list = _friends[msg.sender];
+        if (list.length >= MAX_FRIENDS) revert TooManyFriends();
+
+        list.push(friend);
+        _friendSlot[msg.sender][friend] = list.length;
+        if (!_inAddedBy[friend][msg.sender]) {
+            _inAddedBy[friend][msg.sender] = true;
+            _addedBy[friend].push(msg.sender);
+        }
+        emit FriendAdded(msg.sender, friend);
+    }
+
+    /// @notice Remove a friend (swap-and-pop keeps it O(1) for any list size).
+    function removeFriend(address friend) external {
+        uint256 slot = _friendSlot[msg.sender][friend];
+        if (slot == 0) revert NotFriends();
+        address[] storage list = _friends[msg.sender];
+
+        address last = list[list.length - 1];
+        list[slot - 1] = last; // move the last friend into the removed spot
+        _friendSlot[msg.sender][last] = slot;
+        list.pop();
+        delete _friendSlot[msg.sender][friend]; // after the move, so removing the last entry works too
+
+        emit FriendRemoved(msg.sender, friend);
+    }
+
+    function isFriend(address user, address friend) external view returns (bool) {
+        return _friendSlot[user][friend] != 0;
+    }
+
+    /// @notice Everyone `user` has added (at most MAX_FRIENDS, so returned whole).
+    function friendsOf(address user) external view returns (address[] memory) {
+        return _friends[user];
+    }
+
+    /// @notice People who added `user` (paginated — anyone can add you, so this can grow).
+    function addedBy(address user, uint256 offset, uint256 limit) external view returns (address[] memory out) {
+        address[] storage list = _addedBy[user];
+        uint256 len = list.length;
+        if (offset >= len) return new address[](0);
+        uint256 end = offset + limit > len ? len : offset + limit;
+        out = new address[](end - offset);
+        for (uint256 i = offset; i < end; ++i) {
+            out[i - offset] = list[i];
+        }
+    }
+
+    function addedByLength(address user) external view returns (uint256) {
+        return _addedBy[user].length;
     }
 
     // ─────────────────────────────── Views ───────────────────────────────

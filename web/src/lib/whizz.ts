@@ -78,6 +78,33 @@ export async function listSnapIds(user: Address, box: "inbox" | "outbox", limit 
   return [...ids].reverse();
 }
 
+export type FriendView = { address: Address; name: string; mutual: boolean };
+
+/** Your friends, each with their @name and whether they added you back. */
+export async function listFriends(user: Address): Promise<FriendView[]> {
+  const addrs = await publicClient.readContract({ ...base(), functionName: "friendsOf", args: [user] });
+  return Promise.all(
+    addrs.map(async (address) => {
+      const [name, mutual] = await Promise.all([
+        nameOf(address),
+        publicClient.readContract({ ...base(), functionName: "isFriend", args: [address, user] }),
+      ]);
+      return { address, name, mutual };
+    }),
+  );
+}
+
+/** People who added you that you haven't added back yet (newest first, up to 50). */
+export async function listFriendRequests(user: Address, myFriends: Address[]): Promise<FriendView[]> {
+  const len = await publicClient.readContract({ ...base(), functionName: "addedByLength", args: [user] });
+  const limit = 50n;
+  const offset = len > limit ? len - limit : 0n;
+  const addrs = await publicClient.readContract({ ...base(), functionName: "addedBy", args: [user, offset, limit] });
+  const mine = new Set(myFriends.map((a) => a.toLowerCase()));
+  const pending = [...addrs].reverse().filter((a) => !mine.has(a.toLowerCase()));
+  return Promise.all(pending.map(async (address) => ({ address, name: await nameOf(address), mutual: false })));
+}
+
 const snapSentEvent = getAbiItem({ abi: whizzAbi, name: "SnapSent" });
 
 /**
