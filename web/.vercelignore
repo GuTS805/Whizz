@@ -1,0 +1,7 @@
+# Never upload local secrets — the faucet key is set as an encrypted Vercel env var instead.
+.env
+.env.*
+!.env.example
+node_modules
+.next
+*.tsbuildinfo
