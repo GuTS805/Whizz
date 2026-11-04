@@ -6,7 +6,8 @@
   "scripts": {
     "build": "hardhat build",
     "test": "hardhat test",
-    "deploy:testnet": "hardhat run scripts/deploy.ts --network monadTestnet"
+    "deploy:testnet": "hardhat run scripts/deploy.ts --network monadTestnet",
+    "export-abi": "hardhat build && node scripts/export-abi.ts"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox-viem": "^5.0.7",
