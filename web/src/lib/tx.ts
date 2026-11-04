@@ -244,7 +244,10 @@ export function friendlyError(err: unknown): string {
     if (revert instanceof ContractFunctionRevertedError && revert.data?.errorName) {
       return ERROR_TEXT[revert.data.errorName] ?? revert.data.errorName;
     }
-    if (/insufficient funds/i.test(err.message)) return "Not enough MON for gas — tap 'Get gas'.";
+    if (/insufficient (funds|balance)/i.test(err.message)) return "Not enough MON for gas — tap 👛 → Get gas ⛽";
+    // RPC errors often arrive as a generic "Missing or invalid parameters" with
+    // the real reason in `details` — show that when it's short and readable.
+    if (err.details && err.details.length <= 140 && !/^\s*[[{]/.test(err.details)) return err.details;
     return err.shortMessage;
   }
   return err instanceof Error ? err.message : String(err);

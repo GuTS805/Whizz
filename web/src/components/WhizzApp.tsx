@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { PrivateKeyAccount } from "viem";
+import { parseEther, type PrivateKeyAccount } from "viem";
 
 import { WHIZZ_ADDRESS } from "@/lib/chain";
 import { mon } from "@/lib/format";
@@ -22,6 +22,9 @@ import { Scoreboard } from "./Scoreboard";
 import { Wallet } from "./Wallet";
 
 type Tab = "camera" | "chat" | "rain" | "friends";
+
+/** Enough MON to register comfortably (the gas limit is reserved up front on Monad). */
+const MIN_SIGNUP_BALANCE = parseEther("0.05");
 
 export function WhizzApp() {
   const [account, setAccount] = useState<PrivateKeyAccount | null>(null);
@@ -302,10 +305,13 @@ function Onboarding({ onDone }: { onDone: (acc: PrivateKeyAccount, name: string)
       const acc = loadOrCreateAccount();
       // 2. Get a little gas money from our faucet route.
       setStatus("Getting you some gas ⛽");
+      // Top up whenever the wallet is LOW, not just empty — a wallet left over
+      // from an earlier sign-up can have a little MON that isn't enough to register.
+      // (The server only sends to wallets that really are low.)
       const bal = await publicClient.getBalance({ address: acc.address });
-      if (bal === 0n) {
+      if (bal < MIN_SIGNUP_BALANCE) {
         const err = await requestDrip(acc.address);
-        if (err) throw new Error(err);
+        if (err) throw new Error(`Couldn't get gas: ${err}`);
       }
       // 3. Claim the username + publish the key private snaps are encrypted to (one tx).
       setStatus("Claiming your name on Monad ⚡");
