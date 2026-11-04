@@ -1,5 +1,7 @@
 # Whizz ⚡
 
+[![CI](https://github.com/GuTS805/Whizz/actions/workflows/ci.yml/badge.svg)](https://github.com/GuTS805/Whizz/actions/workflows/ci.yml)
+
 **Snap money to your friends — every snap settles on Monad.**
 
 Whizz is a Snapchat-style app where money behaves like a snap: attach MON to a
