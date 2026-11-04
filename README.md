@@ -43,6 +43,7 @@ This only works with fast blocks, cheap transactions and high throughput.
 | --- | --- |
 | `contracts/` | `Whizz.sol` escrow contract, 12 tests, deploy scripts (Hardhat 3) |
 | `web/` | Next.js mobile web app (viem, Tailwind, Motion) |
+| `mobile/` | Android app (Capacitor) — native shell around the hosted web app |
 
 ## Setup
 
@@ -68,5 +69,23 @@ Phones only allow camera access over https — use the live URL, or
 
 After changing the contract, run `npm run export-abi` in `contracts/` to
 refresh the web app's ABI.
+
+### Android app
+
+The Android app loads the hosted web app inside a native shell (camera
+permission, app icon, full screen), so web deploys reach the app instantly.
+Requires Android Studio (SDK) and JDK 21.
+
+```bash
+cd mobile
+npm install
+# put the hosted https URL in whizz.config.json → { "appUrl": "https://..." }
+npm run sync                  # copies config into the Android project
+cd android && ./gradlew assembleDebug
+# APK: mobile/android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+Install on a USB-connected phone with `adb install -r app/build/outputs/apk/debug/app-debug.apk`,
+or open the project in Android Studio with `npm run open`.
 
 > On Windows PowerShell, use `npm.cmd` / `npx.cmd` if script execution is disabled.

@@ -17,7 +17,9 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="h-full bg-black antialiased">
+    // The Android app (Capacitor) sets --safe-area-inset-* styles on <html> before
+    // React hydrates; suppress the expected attribute mismatch on this element only.
+    <html lang="en" className="h-full bg-black antialiased" suppressHydrationWarning>
       <body className="min-h-full">{children}</body>
     </html>
   );

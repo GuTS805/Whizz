@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Whizz</string>
+    <string name="title_activity_main">Whizz</string>
+    <string name="package_name">xyz.whizz.app</string>
+    <string name="custom_url_scheme">xyz.whizz.app</string>
+</resources>
