@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { hexToBytes, parseEther, type Hex, type PrivateKeyAccount } from "viem";
+import { hexToBytes, parseEther, type Address, type Hex, type PrivateKeyAccount } from "viem";
 
+import { BADGE_TEXT, FILTERS, filterCss, supportsCanvasFilters, timeLabel, type FilterId, type Overlays } from "@/lib/filters";
 import { captureFrame } from "@/lib/image";
 import { friendlyError, writeWhizz } from "@/lib/tx";
 import { encryptSnap } from "@/lib/crypto";
@@ -23,12 +24,26 @@ export function Camera({
   account: PrivateKeyAccount;
   /** Friend chosen from the Friends tab ("📸 Snap"), pre-selected as recipient. */
   presetTo: string | null;
-  onSent: () => void;
+  /** Called with the recipient, so the app can open that conversation. */
+  onSent: (to: { address: Address; name: string }) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [facing, setFacing] = useState<"user" | "environment">("user");
   const [camError, setCamError] = useState<string | null>(null);
   const [shot, setShot] = useState<{ hex: Hex; url: string } | null>(null);
+  const [filter, setFilter] = useState<FilterId>("normal");
+  const [overlays, setOverlays] = useState<Overlays>({ time: false, badge: false });
+  const [clock, setClock] = useState(() => timeLabel());
+  // Filters are only offered where the photo can match the preview (see supportsCanvasFilters).
+  const filtersAvailable = supportsCanvasFilters();
+
+  // Keep the time-stamp preview current.
+  useEffect(() => {
+    if (!overlays.time) return;
+    const id = setInterval(() => setClock(timeLabel()), 10_000);
+    return () => clearInterval(id);
+  }, [overlays.time]);
+
   // Browsers only expose the camera on https (or localhost).
   // Safe to read during render: this component only mounts in the browser after login.
   const camSupported = typeof navigator !== "undefined" && !!navigator.mediaDevices;
@@ -55,22 +70,36 @@ export function Camera({
   const snap = useCallback(async () => {
     const v = videoRef.current;
     if (!v || !v.videoWidth) return;
-    setShot(await captureFrame(v, facing === "user"));
-  }, [facing]);
+    setShot(await captureFrame(v, facing === "user", { filter: filterCss(filter), overlays }));
+  }, [facing, filter, overlays]);
 
   if (shot) {
     return <Compose account={account} shot={shot} presetTo={presetTo} onCancel={() => setShot(null)} onSent={onSent} />;
   }
 
   return (
-    <div className="absolute inset-0 bg-neutral-900">
+    <div className="absolute inset-0 overflow-hidden bg-neutral-900">
       <video
         ref={videoRef}
         autoPlay
         playsInline
         muted
+        style={{ filter: filterCss(filter) }}
         className={`h-full w-full object-cover ${facing === "user" ? "-scale-x-100" : ""}`}
       />
+
+      {/* Live preview of the overlays — drawn the same way onto the captured photo. */}
+      {overlays.badge && (
+        <div className="pointer-events-none absolute top-14 left-1/2 -translate-x-1/2 rounded-full bg-whizz px-4 py-1.5 text-sm font-extrabold whitespace-nowrap text-black">
+          {BADGE_TEXT}
+        </div>
+      )}
+      {overlays.time && (
+        <div className="pointer-events-none absolute bottom-48 left-5 text-6xl font-black text-white drop-shadow-lg">
+          {clock}
+        </div>
+      )}
+
       {presetTo && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 rounded-full bg-black/60 px-4 py-1.5 text-sm">
           Snapping <span className="font-bold text-whizz">@{presetTo}</span>
@@ -81,22 +110,62 @@ export function Camera({
           {camSupported ? camError : "Camera needs https on phones."}
         </p>
       )}
-      <div className="absolute inset-x-0 bottom-6 flex items-center justify-center gap-10">
-        <div className="w-12" />
-        <button
-          onClick={snap}
-          aria-label="Take snap"
-          className="h-20 w-20 rounded-full border-[6px] border-white bg-white/20 active:scale-95"
-        />
-        <button
-          onClick={() => setFacing((f) => (f === "user" ? "environment" : "user"))}
-          aria-label="Flip camera"
-          className="h-12 w-12 rounded-full bg-black/50 text-xl"
-        >
-          🔄
-        </button>
+
+      <div className="absolute top-4 right-3 flex flex-col gap-2">
+        <ToggleButton on={overlays.time} label="Time stamp" onClick={() => setOverlays((o) => ({ ...o, time: !o.time }))}>
+          🕒
+        </ToggleButton>
+        <ToggleButton on={overlays.badge} label="Event badge" onClick={() => setOverlays((o) => ({ ...o, badge: !o.badge }))}>
+          🏷️
+        </ToggleButton>
+      </div>
+
+      <div className="absolute inset-x-0 bottom-4 space-y-4">
+        {filtersAvailable && (
+          <div className="flex gap-2 overflow-x-auto px-4 pb-1">
+            {FILTERS.map((f) => (
+              <button
+                key={f.id}
+                onClick={() => setFilter(f.id)}
+                className={`shrink-0 rounded-full px-3 py-1.5 text-sm backdrop-blur ${
+                  filter === f.id ? "bg-white font-bold text-black" : "bg-black/50 text-white"
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="flex items-center justify-center gap-10">
+          <div className="w-12" />
+          <button
+            onClick={snap}
+            aria-label="Take snap"
+            className="h-20 w-20 rounded-full border-[6px] border-white bg-white/20 active:scale-95"
+          />
+          <button
+            onClick={() => setFacing((f) => (f === "user" ? "environment" : "user"))}
+            aria-label="Flip camera"
+            className="h-12 w-12 rounded-full bg-black/50 text-xl"
+          >
+            🔄
+          </button>
+        </div>
       </div>
     </div>
+  );
+}
+
+function ToggleButton({ on, label, onClick, children }: { on: boolean; label: string; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      aria-label={label}
+      aria-pressed={on}
+      className={`h-11 w-11 rounded-full text-xl backdrop-blur ${on ? "bg-whizz" : "bg-black/50"}`}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -111,7 +180,7 @@ function Compose({
   shot: { hex: Hex; url: string };
   presetTo: string | null;
   onCancel: () => void;
-  onSent: () => void;
+  onSent: (to: { address: Address; name: string }) => void;
 }) {
   const [to, setTo] = useState(presetTo ?? "");
   const [friends, setFriends] = useState<FriendView[]>([]);
@@ -160,7 +229,7 @@ function Compose({
         value: parseEther(amount),
         label: "sendSnap",
       });
-      onSent();
+      onSent({ address: recipient, name: to });
     } catch (e) {
       setError(friendlyError(e));
       setBusy(null);

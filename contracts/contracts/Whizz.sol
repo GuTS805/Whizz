@@ -75,6 +75,19 @@ contract Whizz {
     /// @dev Public key each user's snaps are encrypted to (see setEncryptionKey).
     mapping(address => bytes) public encryptionKey;
 
+    /// @dev Chats: one conversation per pair, holding text messages AND snaps in
+    ///      order. Message text lives in the (cheap) MessageSent event; storage
+    ///      only keeps where to find it — one packed slot per item.
+    struct ChatItem {
+        uint64 blockNumber; // block the item was sent in (to fetch its event)
+        uint64 snapId; //      0 = text message, otherwise the snap's id
+    }
+    mapping(bytes32 => ChatItem[]) private _chat;
+    /// @dev Everyone each user has a conversation with, for the Chats list.
+    mapping(address => address[]) private _partners;
+    mapping(bytes32 => bool) private _chatStarted;
+    uint256 public constant MAX_MESSAGE_BYTES = 2048;
+
     // ─────────────────────────────── Events ──────────────────────────────
     // Events are cheap on-chain logs. The app listens to them live over
     // WebSocket — this is how a snap "pops up" on your friend's phone.
@@ -101,6 +114,8 @@ contract Whizz {
     event FriendsOnlySet(address indexed user, bool enabled);
     event BlockSet(address indexed user, address indexed other, bool isBlocked);
     event EncryptionKeySet(address indexed user);
+    /// @dev `data` is the encrypted message (readable by sender and recipient only).
+    event MessageSent(bytes32 indexed chatId, address indexed from, address indexed to, uint256 index, bytes data);
 
     // ─────────────────────────────── Errors ──────────────────────────────
     // Custom errors are cheaper than revert strings and easy to decode in the app.
@@ -131,6 +146,8 @@ contract Whizz {
     error BadEncryptionKey();
     error InvalidReaction();
     error WrongTip();
+    error EmptyMessage();
+    error MessageTooLong();
 
     // ─────────────────────────────── Names ───────────────────────────────
 
@@ -195,11 +212,8 @@ contract Whizz {
         payable
         returns (uint256 id)
     {
-        if (to == address(0) || to == msg.sender) revert InvalidRecipient();
+        _checkCanContact(to);
         if (duration < MIN_DURATION || duration > MAX_DURATION) revert InvalidDuration();
-        // Anti-spam: the recipient's block list and "friends only" setting.
-        if (blocked[to][msg.sender]) revert Blocked();
-        if (friendsOnly[to] && _friendSlot[to][msg.sender] == 0) revert FriendsOnly();
 
         id = ++snapCount; // ids start at 1, so 0 means "doesn't exist"
         uint64 expiresAt = uint64(block.timestamp) + duration;
@@ -213,8 +227,68 @@ contract Whizz {
         });
         _inbox[to].push(id);
         _outbox[msg.sender].push(id);
+        _recordChatItem(to, uint64(id));
 
         emit SnapSent(id, msg.sender, to, msg.value, expiresAt, caption, image);
+    }
+
+    // ─────────────────────────────── Chat ────────────────────────────────
+
+    /// @notice Send a text message. `data` is encrypted by the app so only the
+    ///         two people in the chat can read it.
+    function sendMessage(address to, bytes calldata data) external {
+        _checkCanContact(to);
+        if (data.length == 0) revert EmptyMessage();
+        if (data.length > MAX_MESSAGE_BYTES) revert MessageTooLong();
+
+        uint256 index = _recordChatItem(to, 0);
+        emit MessageSent(chatId(msg.sender, to), msg.sender, to, index, data);
+    }
+
+    /// @notice The conversation id for two people (same whichever order you pass them).
+    function chatId(address a, address b) public pure returns (bytes32) {
+        return a < b ? keccak256(abi.encodePacked(a, b)) : keccak256(abi.encodePacked(b, a));
+    }
+
+    function chatLength(bytes32 id) external view returns (uint256) {
+        return _chat[id].length;
+    }
+
+    /// @notice A page of a conversation, oldest first.
+    function chatItems(bytes32 id, uint256 offset, uint256 limit) external view returns (ChatItem[] memory out) {
+        ChatItem[] storage list = _chat[id];
+        uint256 len = list.length;
+        if (offset >= len) return new ChatItem[](0);
+        uint256 end = offset + limit > len ? len : offset + limit;
+        out = new ChatItem[](end - offset);
+        for (uint256 i = offset; i < end; ++i) {
+            out[i - offset] = list[i];
+        }
+    }
+
+    /// @notice Everyone `user` has a conversation with.
+    function partnersOf(address user) external view returns (address[] memory) {
+        return _partners[user];
+    }
+
+    /// @dev Anti-spam gate shared by snaps and messages.
+    function _checkCanContact(address to) private view {
+        if (to == address(0) || to == msg.sender) revert InvalidRecipient();
+        if (blocked[to][msg.sender]) revert Blocked();
+        if (friendsOnly[to] && _friendSlot[to][msg.sender] == 0) revert FriendsOnly();
+    }
+
+    /// @dev Append a message (snapId 0) or snap to the pair's conversation.
+    function _recordChatItem(address to, uint64 snapId) private returns (uint256 index) {
+        bytes32 id = chatId(msg.sender, to);
+        if (!_chatStarted[id]) {
+            _chatStarted[id] = true;
+            _partners[msg.sender].push(to);
+            _partners[to].push(msg.sender);
+        }
+        ChatItem[] storage list = _chat[id];
+        index = list.length;
+        list.push(ChatItem({blockNumber: uint64(block.number), snapId: snapId}));
     }
 
     /// @notice Hold-to-unwrap: the recipient pulls money out piece by piece.

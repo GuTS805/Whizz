@@ -213,6 +213,54 @@ describe("Whizz", async function () {
     });
   });
 
+  // ──────────────────────────────── Chat ────────────────────────────────
+  describe("chat", function () {
+    it("keeps messages and snaps in one ordered conversation", async function () {
+      const { whizz, asBob } = await deploy();
+      const id = await whizz.read.chatId([alice.account.address, bob.account.address]);
+      assert.equal(id, await whizz.read.chatId([bob.account.address, alice.account.address])); // order-independent
+
+      await viem.assertions.emitWithArgs(whizz.write.sendMessage([bob.account.address, "0xaa"]), whizz, "MessageSent",
+        [id, getAddr(alice.account.address), getAddr(bob.account.address), 0n, "0xaa"]);
+      await asBob.write.sendSnap([alice.account.address, ONE_MIN, "", IMAGE]); // snap #1, bob → alice
+      await asBob.write.sendMessage([alice.account.address, "0xbbbb"]);
+
+      assert.equal(await whizz.read.chatLength([id]), 3n);
+      const items = await whizz.read.chatItems([id, 0n, 10n]);
+      assert.deepEqual(items.map((i) => i.snapId), [0n, 1n, 0n]); // message, snap 1, message
+      assert.ok(items.every((i, k) => k === 0 || i.blockNumber >= items[k - 1].blockNumber));
+      assert.deepEqual(await whizz.read.chatItems([id, 1n, 1n]), [items[1]]); // paging
+    });
+
+    it("lists each chat partner once, for both people", async function () {
+      const { whizz, asBob, asCarol } = await deploy();
+      await whizz.write.sendMessage([bob.account.address, "0x01"]);
+      await asBob.write.sendMessage([alice.account.address, "0x02"]);
+      await whizz.write.sendSnap([bob.account.address, ONE_MIN, "", IMAGE]);
+      await asCarol.write.sendSnap([alice.account.address, ONE_MIN, "", IMAGE]);
+
+      const lower = (xs: readonly string[]) => xs.map((a) => a.toLowerCase()).sort();
+      assert.deepEqual(lower(await whizz.read.partnersOf([alice.account.address])),
+        lower([bob.account.address, carol.account.address]));
+      assert.deepEqual(lower(await whizz.read.partnersOf([bob.account.address])), lower([alice.account.address]));
+    });
+
+    it("applies the same rules as snaps: size, self, block and friends-only", async function () {
+      const { whizz, asBob } = await deploy();
+      await viem.assertions.revertWithCustomError(whizz.write.sendMessage([bob.account.address, "0x"]), whizz, "EmptyMessage");
+      await viem.assertions.revertWithCustomError(
+        whizz.write.sendMessage([bob.account.address, toHex(new Uint8Array(2049))]), whizz, "MessageTooLong");
+      await whizz.write.sendMessage([bob.account.address, toHex(new Uint8Array(2048).fill(1))]); // exactly the max is fine
+      await viem.assertions.revertWithCustomError(whizz.write.sendMessage([alice.account.address, "0x01"]), whizz, "InvalidRecipient");
+
+      await asBob.write.setBlocked([alice.account.address, true]);
+      await viem.assertions.revertWithCustomError(whizz.write.sendMessage([bob.account.address, "0x01"]), whizz, "Blocked");
+      await asBob.write.setBlocked([alice.account.address, false]);
+      await asBob.write.setFriendsOnly([true]);
+      await viem.assertions.revertWithCustomError(whizz.write.sendMessage([bob.account.address, "0x01"]), whizz, "FriendsOnly");
+    });
+  });
+
   // ─────────────────────────── Encryption keys ───────────────────────────
   describe("encryption keys", function () {
     /** The wallet's real 64-byte public key, recovered from a signature. */

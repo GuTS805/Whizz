@@ -19,11 +19,13 @@ export function Friends({
   myName,
   prefillAdd,
   onSnap,
+  onChat,
 }: {
   account: PrivateKeyAccount;
   myName: string;
   prefillAdd: string | null;
   onSnap: (name: string) => void;
+  onChat: (partner: { address: Address; name: string }) => void;
 }) {
   const [friends, setFriends] = useState<FriendView[] | null>(null);
   const [requests, setRequests] = useState<FriendView[]>([]);
@@ -85,7 +87,7 @@ export function Friends({
         {friends?.length === 0 && <p className="text-white/50">No friends yet. Add someone by their @username ☝️</p>}
         <ul className="space-y-2">
           {friends?.map((f) => (
-            <FriendRow key={f.address} account={account} friend={f} onSnap={onSnap} onRemoved={load} />
+            <FriendRow key={f.address} account={account} friend={f} onSnap={onSnap} onChat={onChat} onRemoved={load} />
           ))}
         </ul>
       </section>
@@ -295,11 +297,13 @@ function FriendRow({
   account,
   friend,
   onSnap,
+  onChat,
   onRemoved,
 }: {
   account: PrivateKeyAccount;
   friend: FriendView;
   onSnap: (name: string) => void;
+  onChat: (partner: { address: Address; name: string }) => void;
   onRemoved: () => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
@@ -314,8 +318,15 @@ function FriendRow({
           <div className="truncate font-semibold">@{friend.name}</div>
           <div className="text-xs text-white/50">{friend.mutual ? "Friends 🤝" : "Waiting for them to add you back"}</div>
         </div>
+        <button
+          onClick={() => onChat({ address: friend.address, name: friend.name })}
+          aria-label={`Chat with @${friend.name}`}
+          className="rounded-full bg-white/10 px-3 py-1.5 text-sm"
+        >
+          💬
+        </button>
         <button onClick={() => onSnap(friend.name)} className="rounded-full bg-whizz px-3 py-1.5 text-sm font-bold text-black">
-          📸 Snap
+          📸
         </button>
         <button
           disabled={busy}

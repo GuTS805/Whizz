@@ -87,6 +87,41 @@ export async function encryptSnap(recipientKey: Hex, caption: string, image: Uin
   return bytesToHex(blob);
 }
 
+/**
+ * Chat messages are encrypted TWICE — once for the recipient, once for the
+ * sender — so both people can read the conversation history.
+ * Format: 0x02 | length of first copy (2 bytes) | copy for recipient | copy for sender
+ */
+const MESSAGE_VERSION = 0x02;
+
+export async function encryptMessage(text: string, recipientKey: Hex, senderKey: Hex): Promise<Hex> {
+  const empty = new Uint8Array(0);
+  const forRecipient = hexToBytes(await encryptSnap(recipientKey, text, empty));
+  const forSender = hexToBytes(await encryptSnap(senderKey, text, empty));
+  const out = new Uint8Array(3 + forRecipient.length + forSender.length);
+  out[0] = MESSAGE_VERSION;
+  out[1] = forRecipient.length >> 8;
+  out[2] = forRecipient.length & 0xff;
+  out.set(forRecipient, 3);
+  out.set(forSender, 3 + forRecipient.length);
+  return bytesToHex(out);
+}
+
+/** Read a chat message with your own key (works whether you sent or received it). */
+export async function decryptMessage(privateKey: Hex, blob: Uint8Array): Promise<string> {
+  if (blob[0] !== MESSAGE_VERSION || blob.length < 3) throw new Error("Not a Whizz message");
+  const firstLen = (blob[1] << 8) | blob[2];
+  const copies = [blob.subarray(3, 3 + firstLen), blob.subarray(3 + firstLen)];
+  for (const copy of copies) {
+    try {
+      return (await decryptSnap(privateKey, copy)).caption;
+    } catch {
+      // Not encrypted for this key — try the other copy.
+    }
+  }
+  throw new Error("This message isn't for you");
+}
+
 /** Decrypt a snap with your own wallet key. Throws if it wasn't encrypted for you. */
 export async function decryptSnap(privateKey: Hex, blob: Uint8Array): Promise<{ caption: string; image: Uint8Array }> {
   if (!isEncryptedSnap(blob)) throw new Error("Not an encrypted snap");

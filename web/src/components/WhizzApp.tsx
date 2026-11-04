@@ -11,16 +11,17 @@ import { exportPrivateKey, hasAccount, importPrivateKey, loadOrCreateAccount, no
 import { publicClient } from "@/lib/chain";
 import { whizzAbi } from "@/lib/abi";
 import { encryptionPublicKey } from "@/lib/crypto";
+import { useWhizzEvents } from "@/lib/events";
 import { getEncryptionKey } from "@/lib/whizz";
 
 import { Camera } from "./Camera";
 import { Friends } from "./Friends";
-import { Inbox } from "./Inbox";
+import { ChatList, ChatThread, type ChatPartner } from "./Chat";
 import { Rain } from "./Rain";
 import { Scoreboard } from "./Scoreboard";
 import { Wallet } from "./Wallet";
 
-type Tab = "camera" | "inbox" | "rain" | "friends";
+type Tab = "camera" | "chat" | "rain" | "friends";
 
 export function WhizzApp() {
   const [account, setAccount] = useState<PrivateKeyAccount | null>(null);
@@ -30,8 +31,22 @@ export function WhizzApp() {
   const [rainParam, setRainParam] = useState<bigint | null>(null);
   const [addParam, setAddParam] = useState<string | null>(null);
   const [snapTo, setSnapTo] = useState<string | null>(null);
+  const [openChat, setOpenChat] = useState<ChatPartner | null>(null);
+  const [chatDot, setChatDot] = useState(false);
   const [walletOpen, setWalletOpen] = useState(false);
   const { balance, refresh } = useBalance(account?.address);
+
+  // New message or snap for me while I'm on another tab → dot on the Chat tab.
+  useWhizzEvents((logs) => {
+    if (!account) return;
+    const me = account.address.toLowerCase();
+    const forMe = logs.some(
+      (l) =>
+        (l.eventName === "MessageSent" || l.eventName === "SnapSent") &&
+        String((l.args as { to: string }).to).toLowerCase() === me,
+    );
+    if (forMe) setChatDot(true);
+  });
 
   // On first load: restore the burner wallet (if any) and its username.
   useEffect(() => {
@@ -116,13 +131,28 @@ export function WhizzApp() {
           <Camera
             account={account}
             presetTo={snapTo}
-            onSent={() => {
+            onSent={(partner) => {
+              // Like Snapchat: after sending, jump into that conversation.
               setSnapTo(null);
-              setTab("inbox");
+              setOpenChat(partner);
+              setTab("chat");
             }}
           />
         )}
-        {tab === "inbox" && <Inbox account={account} />}
+        {tab === "chat" &&
+          (openChat ? (
+            <ChatThread
+              account={account}
+              partner={openChat}
+              onBack={() => setOpenChat(null)}
+              onSnap={(friendName) => {
+                setSnapTo(friendName);
+                setTab("camera");
+              }}
+            />
+          ) : (
+            <ChatList account={account} onOpen={setOpenChat} />
+          ))}
         {tab === "rain" && <Rain account={account} focusRainId={rainParam} />}
         {tab === "friends" && (
           <Friends
@@ -133,6 +163,10 @@ export function WhizzApp() {
               setSnapTo(friendName);
               setTab("camera");
             }}
+            onChat={(partner) => {
+              setOpenChat(partner);
+              setTab("chat");
+            }}
           />
         )}
       </section>
@@ -140,7 +174,7 @@ export function WhizzApp() {
       <nav className="z-20 grid grid-cols-4 border-t border-white/10 bg-black/90 safe-bottom">
         {(
           [
-            ["inbox", "💬", "Snaps"],
+            ["chat", "💬", "Chat"],
             ["camera", "📸", "Camera"],
             ["friends", "👥", "Friends"],
             ["rain", "🌧️", "Rain"],
@@ -150,12 +184,19 @@ export function WhizzApp() {
             key={id}
             onClick={() => {
               if (id !== "camera") setSnapTo(null); // leaving the camera clears a preset friend
+              if (id === "chat") {
+                setChatDot(false);
+                if (tab === "chat") setOpenChat(null); // tapping Chat again goes back to the list
+              }
               setTab(id);
             }}
-            className={`flex flex-col items-center py-2.5 text-xs ${tab === id ? "text-whizz" : "text-white/50"}`}
+            className={`relative flex flex-col items-center py-2.5 text-xs ${tab === id ? "text-whizz" : "text-white/50"}`}
           >
             <span className="text-xl">{icon}</span>
             {label}
+            {id === "chat" && chatDot && tab !== "chat" && (
+              <span className="absolute top-2 right-[calc(50%-18px)] h-2.5 w-2.5 rounded-full bg-whizz" aria-label="New messages" />
+            )}
           </button>
         ))}
       </nav>

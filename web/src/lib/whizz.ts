@@ -66,18 +66,6 @@ export async function getRain(id: bigint): Promise<RainView> {
   return { id, from, expiresAt: Number(expiresAt), drops, perDrop, caught, ended };
 }
 
-/** Latest `limit` snap ids for a user, newest first. */
-export async function listSnapIds(user: Address, box: "inbox" | "outbox", limit = 20n): Promise<bigint[]> {
-  const len = await publicClient.readContract({
-    ...base(),
-    functionName: box === "inbox" ? "inboxLength" : "outboxLength",
-    args: [user],
-  });
-  const offset = len > limit ? len - limit : 0n;
-  const ids = await publicClient.readContract({ ...base(), functionName: box, args: [user, offset, limit] });
-  return [...ids].reverse();
-}
-
 export type FriendView = { address: Address; name: string; mutual: boolean };
 
 /** Your friends, each with their @name and whether they added you back. */
