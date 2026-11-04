@@ -18,8 +18,10 @@ const COOLDOWN_MS = 10 * 60_000; // one drip per address per 10 minutes
 const lastDrip = new Map<string, number>();
 
 export async function POST(request: Request) {
-  const key = process.env.FAUCET_PRIVATE_KEY as `0x${string}` | undefined;
-  if (!key) return Response.json({ error: "Faucet not configured" }, { status: 503 });
+  const raw = process.env.FAUCET_PRIVATE_KEY?.trim();
+  if (!raw) return Response.json({ error: "Faucet not configured" }, { status: 503 });
+  // MetaMask exports keys without "0x" — accept both forms.
+  const key = (raw.startsWith("0x") ? raw : `0x${raw}`) as `0x${string}`;
 
   const body = (await request.json().catch(() => null)) as { address?: string } | null;
   const address = body?.address;
