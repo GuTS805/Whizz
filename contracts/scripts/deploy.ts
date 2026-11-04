@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { network } from "hardhat";
 
-const { viem, networkName } = await network.connect();
+const { viem, networkName } = await network.create();
 const publicClient = await viem.getPublicClient();
 const [deployer] = await viem.getWalletClients();
 
