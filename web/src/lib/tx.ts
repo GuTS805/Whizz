@@ -65,7 +65,11 @@ const isAlreadyKnown = (e: unknown) => /already known|nonce too low|known transa
  *     returns the receipt in the same call — no receipt polling.
  * Falls back to send + poll if the sync call fails for a non-revert reason.
  */
-async function sendSigned(sign: (tipBump: bigint) => Promise<Hex>): Promise<TransactionReceipt> {
+async function sendSigned(
+  sign: (tipBump: bigint) => Promise<Hex>,
+  /** Called when we start over after waiting for funds (so the scoreboard can restart its clock). */
+  onFundsWait: () => void,
+): Promise<TransactionReceipt> {
   let serializedTransaction = await sign(0n);
   // A brand-new wallet's gas money can take a few seconds to become spendable
   // on Monad (execution runs slightly behind consensus) — retry for a while.
@@ -78,6 +82,7 @@ async function sendSigned(sign: (tipBump: bigint) => Promise<Hex>): Promise<Tran
       if (isInsufficientBalance(err) && attempt < 30) {
         await new Promise((r) => setTimeout(r, 500));
         serializedTransaction = await sign(++bump);
+        onFundsWait();
         continue;
       }
       if (isInsufficientBalance(err)) throw err;
@@ -114,7 +119,11 @@ async function signAndSend(opts: {
   label: string;
   started: number;
 }): Promise<TransactionReceipt> {
-  const { account, to, data, value, gas, label, started } = opts;
+  const { account, to, data, value, gas, label } = opts;
+  // The scoreboard measures Monad: time spent waiting for a fresh wallet's
+  // faucet money to become spendable is not confirmation time, so the clock
+  // restarts at the attempt that actually goes through.
+  let started = opts.started;
 
   let receipt: TransactionReceipt;
   try {
@@ -137,7 +146,7 @@ async function signAndSend(opts: {
         maxPriorityFeePerGas: maxPriorityFeePerGas + tipBump,
       });
     try {
-      receipt = await sendSigned(sign);
+      receipt = await sendSigned(sign, () => (started = performance.now()));
     } catch (e) {
       // The tx never made it on-chain, so its nonce is unused — resync from the chain.
       account.nonceManager!.reset({ address: account.address, chainId: monadTestnet.id });

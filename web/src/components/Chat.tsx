@@ -13,6 +13,7 @@ import { exportPrivateKey } from "@/lib/wallet";
 import { getEncryptionKey, listFriends, type FriendView, type SnapView } from "@/lib/whizz";
 
 import { SnapViewer } from "./SnapViewer";
+import { Avatar, Icon, STATUS, StatusMark, timeAgo } from "./ui";
 
 export type ChatPartner = { address: Address; name: string };
 
@@ -25,11 +26,34 @@ function touches(log: WhizzLog, me: string, partner?: string): boolean {
   return partner ? people.includes(partner) : true;
 }
 
+/** The colour + mark + word under a name in the chat list (Snapchat-style status). */
+function chatStatus(c: ChatSummary) {
+  const color = c.lastKind === "message" ? STATUS.chat : c.snapMoney ? STATUS.money : STATUS.snap;
+  if (c.lastFromMe) {
+    const opened = c.lastKind === "snap" && c.snapOpened;
+    return { color, kind: opened ? ("opened" as const) : ("sent" as const), text: opened ? "Opened" : "Delivered", bold: false };
+  }
+  if (isUnread(c)) {
+    const text = c.lastKind === "message" ? "New Chat" : c.snapMoney ? "New Snap with money" : "New Snap";
+    return { color, kind: "new" as const, text, bold: true };
+  }
+  return { color, kind: "seen" as const, text: "Received", bold: false };
+}
+
 // ─────────────────────────────── Chat list ───────────────────────────────
 
-export function ChatList({ account, onOpen }: { account: PrivateKeyAccount; onOpen: (p: ChatPartner) => void }) {
+export function ChatList({
+  account,
+  onOpen,
+  onSnap,
+}: {
+  account: PrivateKeyAccount;
+  onOpen: (p: ChatPartner) => void;
+  onSnap: (name: string) => void;
+}) {
   const [chats, setChats] = useState<ChatSummary[] | null>(null);
   const [picking, setPicking] = useState(false);
+  const [now, setNow] = useState(nowSec);
   const me = lower(account.address);
 
   const load = useCallback(async () => setChats(await listChats(account.address)), [account.address]);
@@ -39,6 +63,11 @@ export function ChatList({ account, onOpen }: { account: PrivateKeyAccount; onOp
     return () => clearTimeout(t);
   }, [load]);
 
+  useEffect(() => {
+    const id = setInterval(() => setNow(nowSec()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
   useWhizzEvents((logs) => {
     if (logs.some((l) => (l.eventName === "MessageSent" || l.eventName === "SnapSent") && touches(l, me))) void load();
   });
@@ -46,40 +75,64 @@ export function ChatList({ account, onOpen }: { account: PrivateKeyAccount; onOp
   if (picking) return <NewChat account={account} onPick={onOpen} onCancel={() => setPicking(false)} />;
 
   return (
-    <div className="absolute inset-0 overflow-y-auto">
-      <div className="sticky top-0 z-10 flex items-center justify-between bg-black px-4 py-3">
-        <h2 className="text-xl font-black">Chats</h2>
-        <button onClick={() => setPicking(true)} className="rounded-full bg-whizz px-4 py-1.5 text-sm font-bold text-black">
-          + New chat
-        </button>
-      </div>
-
-      {chats === null && <p className="p-6 text-center text-white/50">Loading…</p>}
+    <div className="absolute inset-0 overflow-y-auto pb-24">
+      {chats === null && <ListSkeleton />}
       {chats?.length === 0 && (
-        <p className="p-10 text-center text-white/50">No chats yet. Add friends, then say hi 👋</p>
+        <div className="flex flex-col items-center px-10 pt-20 text-center">
+          <Icon.Chat size={48} className="text-white/25" />
+          <p className="mt-4 font-bold">No chats yet</p>
+          <p className="mt-1 text-sm text-white/50">Add friends, then send them a snap or say hi.</p>
+        </div>
       )}
-      <ul className="divide-y divide-white/5">
+      <ul>
         {chats?.map((c) => {
-          const unread = isUnread(c);
+          const s = chatStatus(c);
           return (
-            <li key={c.partner}>
-              <button onClick={() => onOpen({ address: c.partner, name: c.name })} className="flex w-full items-center gap-3 px-4 py-3 text-left">
-                <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-whizz/20 text-lg font-black text-whizz">
-                  {c.name.slice(0, 1).toUpperCase()}
-                </span>
+            <li key={c.partner} className="flex items-center border-b border-white/[0.06]">
+              <button onClick={() => onOpen({ address: c.partner, name: c.name })} className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pl-4 text-left active:bg-white/5">
+                <Avatar name={c.name} size={48} />
                 <span className="min-w-0 flex-1">
-                  <span className={`block truncate ${unread ? "font-black" : "font-semibold"}`}>@{c.name}</span>
-                  <span className={`block truncate text-sm ${unread ? "text-white" : "text-white/50"}`}>
-                    {c.lastFromMe ? "You: " : ""}
-                    {c.preview}
+                  <span className="block truncate text-[15px] font-bold">{c.name}</span>
+                  <span className="mt-0.5 flex items-center gap-1.5 text-[13px]">
+                    <StatusMark kind={s.kind} color={s.color} />
+                    <span className={s.bold ? "font-extrabold" : "text-white/55"} style={s.bold ? { color: s.color } : undefined}>
+                      {s.text}
+                    </span>
+                    <span className="text-white/40">· {timeAgo(c.lastTime, now)}</span>
                   </span>
                 </span>
-                {unread && <span className="h-3 w-3 shrink-0 rounded-full bg-whizz" aria-label="New" />}
+              </button>
+              <button onClick={() => onSnap(c.name)} aria-label={`Snap @${c.name}`} className="p-4 text-white/60 active:text-white">
+                <Icon.Camera size={22} />
               </button>
             </li>
           );
         })}
       </ul>
+
+      <button
+        onClick={() => setPicking(true)}
+        aria-label="New chat"
+        className="absolute right-4 bottom-4 flex h-14 w-14 items-center justify-center rounded-full bg-whizz text-black shadow-xl active:scale-95"
+      >
+        <Icon.NewChat size={24} />
+      </button>
+    </div>
+  );
+}
+
+function ListSkeleton() {
+  return (
+    <div className="space-y-1 pt-1" aria-label="Loading chats">
+      {[0, 1, 2, 3].map((i) => (
+        <div key={i} className="flex animate-pulse items-center gap-3 px-4 py-2.5">
+          <span className="h-12 w-12 rounded-full bg-white/10" />
+          <span className="flex-1 space-y-2">
+            <span className="block h-3 w-28 rounded bg-white/10" />
+            <span className="block h-2.5 w-40 rounded bg-white/[0.06]" />
+          </span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -97,20 +150,21 @@ function NewChat({ account, onPick, onCancel }: { account: PrivateKeyAccount; on
   }, [account.address]);
 
   return (
-    <div className="absolute inset-0 overflow-y-auto p-4">
-      <div className="mb-3 flex items-center gap-3">
-        <button onClick={onCancel} className="text-2xl" aria-label="Back">
-          ‹
+    <div className="absolute inset-0 overflow-y-auto">
+      <div className="flex items-center gap-2 px-2 pt-1 pb-2">
+        <button onClick={onCancel} className="p-2" aria-label="Back">
+          <Icon.Back size={24} />
         </button>
-        <h2 className="text-xl font-black">New chat</h2>
+        <h2 className="text-lg font-extrabold">New Chat</h2>
       </div>
-      {friends === null && <p className="text-white/50">Loading friends…</p>}
-      {friends?.length === 0 && <p className="text-white/50">Add friends in the 👥 Friends tab first.</p>}
-      <ul className="space-y-2">
+      {friends === null && <ListSkeleton />}
+      {friends?.length === 0 && <p className="px-4 text-white/50">Add friends in the Friends tab first.</p>}
+      <ul>
         {friends?.map((f) => (
           <li key={f.address}>
-            <button onClick={() => onPick({ address: f.address, name: f.name })} className="w-full rounded-2xl bg-white/5 px-4 py-3 text-left font-semibold">
-              @{f.name}
+            <button onClick={() => onPick({ address: f.address, name: f.name })} className="flex w-full items-center gap-3 px-4 py-2.5 text-left active:bg-white/5">
+              <Avatar name={f.name} size={44} />
+              <span className="font-bold">{f.name}</span>
             </button>
           </li>
         ))}
@@ -122,6 +176,12 @@ function NewChat({ account, onPick, onCancel }: { account: PrivateKeyAccount; on
 // ─────────────────────────────── Conversation ───────────────────────────────
 
 type Pending = { id: number; text: string; failed?: string };
+
+/** One line in the conversation, already tagged with who sent it (for the ME / NAME labels). */
+type Line =
+  | { key: string; mine: boolean; type: "entry"; entry: ChatEntry }
+  | { key: string; mine: true; type: "outgoingSnap"; id: number; amount: bigint; failed?: string }
+  | { key: string; mine: true; type: "pending"; p: Pending };
 
 export function ChatThread({
   account,
@@ -138,7 +198,6 @@ export function ChatThread({
   const [chatId, setChatId] = useState<string | null>(null);
   const [pending, setPending] = useState<Pending[]>([]);
   const [text, setText] = useState("");
-  const [error, setError] = useState<string | null>(null);
   const [openSnap, setOpenSnap] = useState<SnapView | null>(null);
   const [now, setNow] = useState(nowSec);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -170,7 +229,7 @@ export function ChatThread({
   const outgoing = useMemo(() => allOutgoing.filter((s) => lower(s.to) === them), [allOutgoing, them]);
 
   // Once Monad confirms a snap, load it from the chain, then drop the placeholder
-  // (in that order, so the bubble never blinks out).
+  // (in that order, so it never blinks out).
   useEffect(() => {
     const done = outgoing.filter((s) => s.status === "sent");
     if (done.length === 0) return;
@@ -203,7 +262,6 @@ export function ChatThread({
   const send = async () => {
     const message = text.trim();
     if (!message || tooLong) return;
-    setError(null);
     setText("");
     const id = ++pendingId.current;
     setPending((p) => [...p, { id, text: message }]);
@@ -233,85 +291,107 @@ export function ChatThread({
     );
   }
 
+  const lines: Line[] = [
+    ...(entries ?? []).map((e): Line => ({ key: `e${e.index}`, mine: lower(e.from) === me, type: "entry", entry: e })),
+    ...outgoing.map((s): Line => ({ key: `o${s.id}`, mine: true, type: "outgoingSnap", id: s.id, amount: s.amount, failed: s.status === "failed" ? s.error : undefined })),
+    ...pending.map((p): Line => ({ key: `p${p.id}`, mine: true, type: "pending", p })),
+  ];
+
   return (
     <div className="absolute inset-0 flex flex-col">
-      <div className="flex items-center gap-3 border-b border-white/10 px-3 py-2">
-        <button onClick={onBack} className="px-2 text-3xl leading-none" aria-label="Back to chats">
-          ‹
-        </button>
-        <span className="flex h-9 w-9 items-center justify-center rounded-full bg-whizz/20 font-black text-whizz">
-          {partner.name.slice(0, 1).toUpperCase()}
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="truncate font-bold">@{partner.name}</div>
-          <div className="text-[11px] text-white/40">🔒 End-to-end encrypted · on Monad</div>
+      <div className="safe-top border-b border-white/[0.06]">
+        <div className="flex items-center gap-2 px-2 py-2">
+          <button onClick={onBack} className="p-2" aria-label="Back to chats">
+            <Icon.Back size={24} />
+          </button>
+          <Avatar name={partner.name} size={36} />
+          <div className="min-w-0 flex-1 pl-1">
+            <div className="truncate font-extrabold">{partner.name}</div>
+            <div className="text-[11px] text-white/45">End-to-end encrypted · on Monad</div>
+          </div>
+          <button onClick={() => onSnap(partner.name)} className="p-2.5" aria-label="Send a snap">
+            <Icon.Camera size={24} />
+          </button>
         </div>
-        <button onClick={() => onSnap(partner.name)} className="rounded-full bg-whizz px-3 py-1.5 text-sm font-bold text-black" aria-label="Send a snap">
-          📸
-        </button>
       </div>
 
-      <div className="flex-1 space-y-2 overflow-y-auto px-3 py-4">
-        {entries === null && <p className="text-center text-white/50">Loading…</p>}
-        {entries?.length === 0 && pending.length === 0 && outgoing.length === 0 && (
-          <p className="pt-10 text-center text-white/50">Say hi to @{partner.name} 👋</p>
+      <div className="flex-1 overflow-y-auto px-4 py-3">
+        {entries === null && <p className="pt-10 text-center text-sm text-white/40">Loading…</p>}
+        {entries?.length === 0 && lines.length === 0 && (
+          <div className="flex flex-col items-center pt-16 text-center">
+            <Avatar name={partner.name} size={72} />
+            <p className="mt-3 text-lg font-extrabold">{partner.name}</p>
+            <p className="mt-1 text-sm text-white/50">Send a snap or say hi 👋</p>
+          </div>
         )}
-        {entries?.map((e) =>
-          e.kind === "message" ? (
-            <Bubble key={e.index} mine={lower(e.from) === me}>
-              {e.text}
-            </Bubble>
-          ) : (
-            <SnapBubble
-              key={e.index}
-              account={account}
-              snap={e.snap}
-              mine={lower(e.from) === me}
-              now={now}
-              onOpen={() => setOpenSnap(e.snap)}
-              onChange={load}
-            />
-          ),
-        )}
-        {outgoing.map((s) => (
-          <div key={`snap-${s.id}`} className="flex flex-col items-end">
-            <div
-              className={`max-w-[78%] rounded-2xl border border-whizz/50 bg-whizz/10 px-4 py-3 text-sm font-semibold ${
-                s.status === "failed" ? "" : "animate-pulse"
-              }`}
-            >
-              {s.amount > 0n ? `🎁 Snap · ${mon(s.amount)} MON` : "📸 Snap"}
+        {lines.map((line, i) => {
+          const showLabel = i === 0 || lines[i - 1].mine !== line.mine;
+          const color = line.mine ? STATUS.snap : STATUS.chat;
+          return (
+            <div key={line.key}>
+              {showLabel && (
+                <div className="mt-3 mb-1 text-[11px] font-extrabold tracking-wide uppercase" style={{ color }}>
+                  {line.mine ? "Me" : partner.name}
+                </div>
+              )}
+              <div className="border-l-2 py-0.5 pl-2.5" style={{ borderColor: color }}>
+                {line.type === "entry" && line.entry.kind === "message" && (
+                  <p className="text-[15px] break-words whitespace-pre-wrap">{line.entry.text}</p>
+                )}
+                {line.type === "entry" && line.entry.kind === "snap" && (
+                  <SnapLine
+                    account={account}
+                    snap={line.entry.snap}
+                    mine={line.mine}
+                    now={now}
+                    onOpen={() => line.entry.kind === "snap" && setOpenSnap(line.entry.snap)}
+                    onChange={load}
+                  />
+                )}
+                {line.type === "outgoingSnap" && (
+                  <div className="py-1">
+                    <span className="flex items-center gap-2 text-sm font-bold">
+                      <StatusMark kind="sent" color={line.amount > 0n ? STATUS.money : STATUS.snap} />
+                      {line.amount > 0n ? `Snap · ${mon(line.amount)} MON` : "Snap"}
+                      {!line.failed && <span className="animate-pulse font-semibold text-white/45">Sending…</span>}
+                    </span>
+                    {line.failed && (
+                      <span className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[#ff6b81]">
+                        Not sent: {line.failed}
+                        <button onClick={() => outbox.retry(line.id)} className="rounded-full bg-white/10 px-2.5 py-0.5 font-bold text-white">
+                          Retry
+                        </button>
+                        <button onClick={() => outbox.remove(line.id)} className="font-bold text-white/50">
+                          Discard
+                        </button>
+                      </span>
+                    )}
+                  </div>
+                )}
+                {line.type === "pending" && (
+                  <div>
+                    <p className={`text-[15px] break-words whitespace-pre-wrap ${line.p.failed ? "" : "text-white/50"}`}>{line.p.text}</p>
+                    <span className={`text-[11px] ${line.p.failed ? "text-[#ff6b81]" : "text-white/35"}`}>
+                      {line.p.failed ? `Not sent: ${line.p.failed}` : "Sending…"}
+                    </span>
+                  </div>
+                )}
+              </div>
             </div>
-            {s.status === "failed" ? (
-              <span className="mt-0.5 flex items-center gap-2 text-[11px] text-red-400">
-                Not sent: {s.error}
-                <button onClick={() => outbox.retry(s.id)} className="rounded-full bg-white/10 px-2 py-0.5 text-white">
-                  Retry
-                </button>
-                <button onClick={() => outbox.remove(s.id)} className="text-white/60" aria-label="Discard snap">
-                  ✕
-                </button>
-              </span>
-            ) : (
-              <span className="mt-0.5 text-[11px] text-white/40">Sending ⚡</span>
-            )}
-          </div>
-        ))}
-        {pending.map((p) => (
-          <div key={p.id} className="flex flex-col items-end">
-            <Bubble mine dim={!p.failed}>
-              {p.text}
-            </Bubble>
-            <span className={`mt-0.5 text-[11px] ${p.failed ? "text-red-400" : "text-white/40"}`}>
-              {p.failed ? `Not sent: ${p.failed}` : "Sending ⚡"}
-            </span>
-          </div>
-        ))}
+          );
+        })}
         <div ref={bottomRef} />
       </div>
 
-      <div className="border-t border-white/10 p-3">
-        <div className="flex gap-2">
+      <div className="border-t border-white/[0.06] px-3 py-2">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => onSnap(partner.name)}
+            aria-label="Send a snap"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/10"
+          >
+            <Icon.Camera size={20} />
+          </button>
           <input
             value={text}
             onChange={(e) => setText(e.target.value)}
@@ -321,39 +401,28 @@ export function ChatThread({
                 void send();
               }
             }}
-            placeholder="Chat"
-            className="min-w-0 flex-1 rounded-full bg-white/10 px-4 py-3 outline-none"
+            placeholder="Send a chat"
+            className="min-w-0 flex-1 rounded-full bg-white/10 px-4 py-2.5 outline-none placeholder:text-white/40"
           />
-          <button
-            disabled={!text.trim() || tooLong}
-            onClick={() => void send()}
-            className="rounded-full bg-whizz px-5 font-bold text-black disabled:opacity-40"
-          >
-            Send
-          </button>
+          {text.trim() && (
+            <button
+              disabled={tooLong}
+              onClick={() => void send()}
+              aria-label="Send"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#0fadff] text-white disabled:opacity-40"
+            >
+              <Icon.Send size={20} />
+            </button>
+          )}
         </div>
-        {tooLong && <p className="mt-1 text-xs text-red-400">Message too long ({bytes}/{MAX_MESSAGE_TEXT_BYTES} bytes)</p>}
-        {error && <p className="mt-1 text-xs text-red-400">{error}</p>}
+        {tooLong && <p className="mt-1 text-xs text-[#ff6b81]">Too long ({bytes}/{MAX_MESSAGE_TEXT_BYTES} bytes)</p>}
       </div>
     </div>
   );
 }
 
-function Bubble({ mine, dim, children }: { mine: boolean; dim?: boolean; children: React.ReactNode }) {
-  return (
-    <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
-      <div
-        className={`max-w-[78%] rounded-2xl px-4 py-2 break-words whitespace-pre-wrap ${
-          mine ? "rounded-br-sm bg-whizz text-black" : "rounded-bl-sm bg-white/10"
-        } ${dim ? "opacity-60" : ""}`}
-      >
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function SnapBubble({
+/** A snap inside the conversation: a status line you tap to open (or reclaim when it expired unopened). */
+function SnapLine({
   account,
   snap,
   mine,
@@ -374,34 +443,43 @@ function SnapBubble({
   const left = snap.total - snap.claimed;
   const expired = now >= snap.expiresAt;
   const opened = hasMoney && left === 0n && snap.claimed > 0n;
+  const color = hasMoney ? STATUS.money : STATUS.snap;
 
   let label: string;
+  let kind: "new" | "seen" | "sent" | "opened";
   if (mine) {
-    if (!hasMoney) label = expired ? "📸 Snap · gone 💨" : "📸 You sent a snap";
-    else if (opened) label = `🎁 Snap · opened (${mon(snap.total)} MON) ✓`;
-    else if (left === 0n) label = "🎁 Snap · money returned 💨";
-    else if (expired) label = `🎁 Snap · not opened — ${mon(left)} MON can come back`;
-    else label = `🎁 Snap · ${mon(snap.claimed)}/${mon(snap.total)} MON unwrapped · ${timeLeft(snap.expiresAt, now)}`;
+    kind = opened || snap.claimed > 0n ? "opened" : "sent";
+    if (!hasMoney) label = expired ? "Snap · gone" : "Delivered";
+    else if (opened) label = `Opened · ${mon(snap.total)} MON unwrapped`;
+    else if (left === 0n) label = "Money came back to you";
+    else if (expired) label = `Not opened · ${mon(left)} MON can come back`;
+    else label = `${mon(snap.claimed)}/${mon(snap.total)} MON unwrapped · ${timeLeft(snap.expiresAt, now)} left`;
   } else {
-    if (expired) label = hasMoney && left === 0n && snap.claimed > 0n ? `🎁 Opened · +${mon(snap.claimed)} MON` : "💨 Gone";
-    else if (hasMoney && left > 0n) label = `🎁 Tap to open · ${mon(left)} MON inside`;
-    else if (hasMoney) label = `🎁 Opened · +${mon(snap.claimed)} MON`;
-    else label = "📸 Tap to view";
+    if (expired) {
+      kind = "seen";
+      label = hasMoney && snap.claimed > 0n ? `Opened · +${mon(snap.claimed)} MON` : "Gone";
+    } else if (hasMoney && left > 0n) {
+      kind = "new";
+      label = `Tap to open · ${mon(left)} MON inside`;
+    } else if (hasMoney) {
+      kind = "seen";
+      label = `Opened · +${mon(snap.claimed)} MON`;
+    } else {
+      kind = "new";
+      label = "Tap to view";
+    }
   }
 
   const canOpen = !mine && !expired;
   const canReclaim = mine && hasMoney && expired && left > 0n;
 
   return (
-    <div className={`flex flex-col ${mine ? "items-end" : "items-start"}`}>
-      <button
-        disabled={!canOpen}
-        onClick={onOpen}
-        className={`max-w-[78%] rounded-2xl border px-4 py-3 text-left text-sm font-semibold ${
-          mine ? "border-whizz/50 bg-whizz/10" : canOpen ? "border-whizz bg-whizz/20" : "border-white/10 bg-white/5"
-        }`}
-      >
-        {label}
+    <div className="py-1">
+      <button disabled={!canOpen} onClick={onOpen} className="flex items-center gap-2 text-left text-sm font-bold disabled:cursor-default">
+        <StatusMark kind={kind} color={color} />
+        <span style={kind === "new" ? { color } : undefined} className={kind === "new" ? "" : "text-white/80"}>
+          {label}
+        </span>
       </button>
       {canReclaim && (
         <button
@@ -418,12 +496,12 @@ function SnapBubble({
             }
             setBusy(false);
           }}
-          className="mt-1 rounded-full bg-white/10 px-3 py-1 text-xs"
+          className="mt-1.5 rounded-full bg-white/10 px-3 py-1 text-xs font-bold"
         >
-          {busy ? "…" : "Poof it back 💨"}
+          {busy ? "…" : "Get it back"}
         </button>
       )}
-      {error && <span className="mt-0.5 text-[11px] text-red-400">{error}</span>}
+      {error && <span className="mt-0.5 block text-[11px] text-[#ff6b81]">{error}</span>}
     </div>
   );
 }

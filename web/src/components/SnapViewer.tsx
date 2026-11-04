@@ -11,6 +11,8 @@ import { exportPrivateKey } from "@/lib/wallet";
 import { friendlyError, writeWhizz } from "@/lib/tx";
 import { getSnapContent, type SnapView } from "@/lib/whizz";
 
+import { Avatar, Icon } from "./ui";
+
 /**
  * HOLD-TO-UNWRAP — the core "why Monad" feature.
  *
@@ -47,6 +49,7 @@ export function SnapViewer({
   const [error, setError] = useState<string | null>(null);
   const [floaters, setFloaters] = useState<{ key: number; text: string }[]>([]);
   const [now, setNow] = useState(nowSec);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const holdingRef = useRef(false);
   const confirmedRef = useRef(snap.claimed);
@@ -197,16 +200,36 @@ export function SnapViewer({
           <div className="absolute inset-x-0 bottom-28 bg-black/50 px-4 py-2 text-center text-lg">{content.caption}</div>
         )}
 
-        <button onClick={onClose} className="absolute top-4 left-4 rounded-full bg-black/60 px-3 py-1 text-xl" onPointerDown={(e) => e.stopPropagation()}>
-          ✕
-        </button>
-        <div className="absolute top-4 right-4 flex flex-col items-end gap-1.5" onPointerDown={(e) => e.stopPropagation()}>
-          <div className="rounded-full bg-black/60 px-3 py-1 text-xs">
-            {content?.isPrivate && "🔒 "}@{senderName} · poof in {timeLeft(snap.expiresAt, now)}
+        {/* Header, Snapchat style: who · how long it lasts … menu · close */}
+        <div
+          className="safe-top absolute inset-x-0 top-0 bg-gradient-to-b from-black/60 to-transparent"
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center gap-2.5 px-3 pt-3 pb-8">
+            <Avatar name={senderName} size={36} />
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-extrabold">{senderName}</div>
+              <div className="text-[11px] font-semibold text-white/70">
+                {content?.isPrivate ? "Encrypted · " : ""}gone in {timeLeft(snap.expiresAt, now)}
+              </div>
+            </div>
+            <div className="relative">
+              <button onClick={() => setMenuOpen((o) => !o)} aria-label="More" className="p-2">
+                <Icon.More size={22} />
+              </button>
+              {menuOpen && (
+                <button
+                  onClick={block}
+                  className="absolute top-10 right-0 rounded-xl bg-neutral-900 px-4 py-2.5 text-sm font-bold whitespace-nowrap text-[#ff6b81] shadow-xl"
+                >
+                  Block {senderName}
+                </button>
+              )}
+            </div>
+            <button onClick={onClose} aria-label="Close snap" className="p-2">
+              <Icon.Close size={24} />
+            </button>
           </div>
-          <button onClick={block} className="rounded-full bg-black/60 px-3 py-1 text-xs text-red-300">
-            Block
-          </button>
         </div>
 
         {hasMoney && (
@@ -248,17 +271,20 @@ export function SnapViewer({
         </AnimatePresence>
       </div>
 
-      <div className="flex items-center justify-between gap-3 p-4">
-        <div className="flex gap-2">
-          {REACTIONS.map((r) => (
-            <button key={r.id} onClick={() => react(r)} className="rounded-full bg-white/10 px-3 py-2 text-2xl active:scale-90">
-              {r.emoji}
-            </button>
-          ))}
-        </div>
-        <span className="text-xs text-white/50">reactions tip @{senderName}</span>
+      <div className="safe-bottom flex items-center gap-2 px-4 pt-3 pb-3">
+        <span className="flex-1 text-xs font-semibold text-white/50">React = tip {senderName}</span>
+        {REACTIONS.map((r) => (
+          <button
+            key={r.id}
+            onClick={() => react(r)}
+            aria-label={`React ${r.emoji} and tip ${mon(r.value)} MON`}
+            className="flex h-12 w-12 items-center justify-center rounded-full bg-white/10 text-2xl active:scale-90"
+          >
+            {r.emoji}
+          </button>
+        ))}
       </div>
-      {error && <p className="px-4 pb-3 text-sm text-red-400">{error}</p>}
+      {error && <p className="px-4 pb-3 text-sm text-[#ff6b81]">{error}</p>}
     </div>
   );
 }

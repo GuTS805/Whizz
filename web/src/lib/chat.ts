@@ -1,6 +1,6 @@
 "use client";
 
-import { getAbiItem, hexToBytes, type Address, type Hex } from "viem";
+import { concat, getAbiItem, hexToBytes, keccak256, type Address, type Hex } from "viem";
 
 import { whizzAbi } from "./abi";
 import { publicClient, WHIZZ_ADDRESS } from "./chain";
@@ -25,16 +25,28 @@ export type ChatSummary = {
   name: string;
   length: number;
   lastBlock: bigint;
+  /** Unix seconds of the last item (from its block). */
+  lastTime: number;
   preview: string;
   lastFromMe: boolean;
+  lastKind: "message" | "snap";
+  /** For a snap: does it carry money, and has the recipient opened it? */
+  snapMoney: boolean;
+  snapOpened: boolean;
 };
 
 const base = () => ({ address: WHIZZ_ADDRESS!, abi: whizzAbi }) as const;
 const messageEvent = getAbiItem({ abi: whizzAbi, name: "MessageSent" });
 const MAX_SPAN = 100n;
 
-export async function getChatId(a: Address, b: Address): Promise<Hex> {
-  return publicClient.readContract({ ...base(), functionName: "chatId", args: [a, b] });
+/**
+ * Same formula as the contract's chatId(a, b): keccak256 of the two addresses,
+ * lower one first. Computed here instead of asked for — one round trip saved
+ * every time a chat opens.
+ */
+export function getChatId(a: Address, b: Address): Hex {
+  const [lo, hi] = BigInt(a) < BigInt(b) ? [a, b] : [b, a];
+  return keccak256(concat([lo, hi]));
 }
 
 /** Fetch MessageSent logs for a chat at the given blocks, in as few requests as possible. */
@@ -64,7 +76,7 @@ async function readText(data: Hex): Promise<string> {
 
 /** The most recent `limit` items of a conversation, oldest first. */
 export async function loadChat(me: Address, partner: Address, limit = 40): Promise<{ chatId: Hex; entries: ChatEntry[] }> {
-  const chatId = await getChatId(me, partner);
+  const chatId = getChatId(me, partner);
   const len = await publicClient.readContract({ ...base(), functionName: "chatLength", args: [chatId] });
   const offset = len > BigInt(limit) ? len - BigInt(limit) : 0n;
   const items = await publicClient.readContract({ ...base(), functionName: "chatItems", args: [chatId, offset, BigInt(limit)] });
@@ -93,25 +105,40 @@ export async function listChats(me: Address): Promise<ChatSummary[]> {
   const partners = await publicClient.readContract({ ...base(), functionName: "partnersOf", args: [me] });
   const summaries = await Promise.all(
     partners.map(async (partner): Promise<ChatSummary | null> => {
-      const chatId = await getChatId(me, partner);
+      const chatId = getChatId(me, partner);
       const len = await publicClient.readContract({ ...base(), functionName: "chatLength", args: [chatId] });
       if (len === 0n) return null;
       const [last] = await publicClient.readContract({ ...base(), functionName: "chatItems", args: [chatId, len - 1n, 1n] });
-      const name = await nameOf(partner);
+      const [name, block] = await Promise.all([nameOf(partner), publicClient.getBlock({ blockNumber: last.blockNumber })]);
 
       let preview = "";
       let lastFromMe = false;
+      let snapMoney = false;
+      let snapOpened = false;
       if (last.snapId === 0n) {
         const logs = await fetchMessageLogs(chatId, [last.blockNumber]);
         const log = logs.find((l) => l.args.index === len - 1n);
         lastFromMe = log?.args.from.toLowerCase() === me.toLowerCase();
-        preview = log ? await readText(log.args.data) : "💬 Message";
+        preview = log ? await readText(log.args.data) : "Message";
       } else {
         const snap = await getSnap(last.snapId);
         lastFromMe = snap.from.toLowerCase() === me.toLowerCase();
-        preview = snap.total > 0n ? "🎁 Snap with money" : "📸 Snap";
+        snapMoney = snap.total > 0n;
+        snapOpened = snap.claimed > 0n;
+        preview = snapMoney ? "Snap with money" : "Snap";
       }
-      return { partner, name, length: Number(len), lastBlock: last.blockNumber, preview, lastFromMe };
+      return {
+        partner,
+        name,
+        length: Number(len),
+        lastBlock: last.blockNumber,
+        lastTime: Number(block.timestamp),
+        preview,
+        lastFromMe,
+        lastKind: last.snapId === 0n ? "message" : "snap",
+        snapMoney,
+        snapOpened,
+      };
     }),
   );
   return summaries

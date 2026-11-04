@@ -1,34 +1,37 @@
 "use client";
 
+import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useState } from "react";
 import { parseEther, type PrivateKeyAccount } from "viem";
 
-import { WHIZZ_ADDRESS } from "@/lib/chain";
-import { mon } from "@/lib/format";
+import { whizzAbi } from "@/lib/abi";
+import { publicClient, WHIZZ_ADDRESS } from "@/lib/chain";
+import { encryptionPublicKey } from "@/lib/crypto";
+import { useWhizzEvents } from "@/lib/events";
 import { estimateWhizzGas, friendlyError, warmUp, writeWhizz } from "@/lib/tx";
 import { requestDrip, useBalance } from "@/lib/useBalance";
 import { exportPrivateKey, hasAccount, importPrivateKey, loadOrCreateAccount, normalizePrivateKey } from "@/lib/wallet";
-import { publicClient } from "@/lib/chain";
-import { whizzAbi } from "@/lib/abi";
-import { encryptionPublicKey } from "@/lib/crypto";
-import { useWhizzEvents } from "@/lib/events";
 import { addressForName, getEncryptionKey } from "@/lib/whizz";
 
 import { Camera } from "./Camera";
-import { Friends } from "./Friends";
 import { ChatList, ChatThread, type ChatPartner } from "./Chat";
+import { Friends } from "./Friends";
 import { Rain } from "./Rain";
-import { Scoreboard } from "./Scoreboard";
+import { SpeedPage } from "./Scoreboard";
+import { Icon, TopBar } from "./ui";
 import { Wallet } from "./Wallet";
 
-type Tab = "camera" | "chat" | "rain" | "friends";
+type Tab = "rain" | "chat" | "camera" | "friends" | "speed";
 
 /** Enough MON to register comfortably (the gas limit is reserved up front on Monad). */
 const MIN_SIGNUP_BALANCE = parseEther("0.05");
 
+/** The username is remembered on the phone so the app opens instantly; the chain is still checked. */
+const NAME_KEY = "whizz:name";
+
 /**
- * Create this device's wallet and top it up from the faucet — once. Onboarding
- * starts this on the first keystroke and "Let's go" just awaits the same promise.
+ * Create this device's wallet and top it up from the faucet — once. Sign-up
+ * starts this as early as possible and later steps await the same promise.
  * Tops up whenever the wallet is LOW, not just empty: a wallet left over from an
  * earlier sign-up can hold a little MON that isn't enough (the server re-checks).
  */
@@ -52,6 +55,24 @@ function fundWallet(): Promise<PrivateKeyAccount> {
   return promise;
 }
 
+/** Older or restored wallets may not have published an encryption key yet — do it quietly. */
+function ensureEncryptionKey(acc: PrivateKeyAccount) {
+  void getEncryptionKey(acc.address)
+    .then((key) =>
+      key
+        ? undefined
+        : writeWhizz({
+            account: acc,
+            functionName: "setEncryptionKey",
+            args: [encryptionPublicKey(exportPrivateKey()!)],
+            label: "setEncryptionKey",
+          }),
+    )
+    .catch(() => {});
+}
+
+type Claim = { name: string; state: "pending" | "done" };
+
 export function WhizzApp() {
   const [account, setAccount] = useState<PrivateKeyAccount | null>(null);
   const [name, setName] = useState<string | null>(null);
@@ -63,11 +84,14 @@ export function WhizzApp() {
   const [openChat, setOpenChat] = useState<ChatPartner | null>(null);
   const [chatDot, setChatDot] = useState(false);
   const [walletOpen, setWalletOpen] = useState(false);
+  const [claim, setClaim] = useState<Claim | null>(null);
+  const [signupError, setSignupError] = useState<{ name: string; error: string } | null>(null);
   const { balance, refresh } = useBalance(account?.address);
 
   // New message or snap for me while I'm on another tab → dot on the Chat tab.
+  // (Not while Chat is open: you're already looking at it.)
   useWhizzEvents((logs) => {
-    if (!account) return;
+    if (!account || tab === "chat") return;
     const me = account.address.toLowerCase();
     const forMe = logs.some(
       (l) =>
@@ -95,71 +119,125 @@ export function WhizzApp() {
       if (hasAccount() && WHIZZ_ADDRESS) {
         const acc = loadOrCreateAccount();
         setAccount(acc);
+        const remembered = localStorage.getItem(NAME_KEY);
+        if (remembered) {
+          // Open straight away with the remembered name; confirm it with the chain after.
+          setName(remembered);
+          setReady(true);
+        }
         const n = await publicClient
           .readContract({ address: WHIZZ_ADDRESS, abi: whizzAbi, functionName: "nameOf", args: [acc.address] })
-          .catch(() => "");
-        if (n) {
-          setName(n);
-          // Older or restored wallets may not have published an encryption key yet.
-          // Do it quietly in the background so friends can send private snaps.
-          void getEncryptionKey(acc.address)
-            .then((key) =>
-              key
-                ? undefined
-                : writeWhizz({
-                    account: acc,
-                    functionName: "setEncryptionKey",
-                    args: [encryptionPublicKey(exportPrivateKey()!)],
-                    label: "setEncryptionKey",
-                  }),
-            )
-            .catch(() => {});
+          .catch(() => null); // network trouble: trust what we remembered
+        if (n !== null) {
+          if (n) localStorage.setItem(NAME_KEY, n);
+          else localStorage.removeItem(NAME_KEY);
+          setName(n || null);
         }
+        if (n) ensureEncryptionKey(acc);
       }
       setReady(true);
     };
     void boot();
   }, []);
 
+  /**
+   * Sign-up finishes INSTANTLY: we drop you into the camera and claim the
+   * name on-chain in the background (the name was already checked as free).
+   * If the claim fails, you land back on the username screen with the reason.
+   */
+  const signUp = (acc: PrivateKeyAccount, chosen: string) => {
+    setAccount(acc);
+    setName(chosen);
+    setTab("camera");
+    setClaim({ name: chosen, state: "pending" });
+    void (async () => {
+      try {
+        await fundWallet();
+        await writeWhizz({
+          account: acc,
+          functionName: "register",
+          args: [chosen, encryptionPublicKey(exportPrivateKey()!)],
+          label: "register",
+        });
+        localStorage.setItem(NAME_KEY, chosen);
+        setClaim({ name: chosen, state: "done" });
+        setTimeout(() => setClaim(null), 2000);
+        void refresh();
+      } catch (e) {
+        setClaim(null);
+        setName(null);
+        setSignupError({ name: chosen, error: friendlyError(e) });
+      }
+    })();
+  };
+
   if (!WHIZZ_ADDRESS) return <NotDeployed />;
   if (!ready) return <Splash />;
   if (!account || !name) {
     return (
       <Onboarding
-        onDone={(acc, n) => {
+        initialName={signupError?.name}
+        initialError={signupError?.error}
+        onSignUp={signUp}
+        onRestored={(acc, n) => {
+          localStorage.setItem(NAME_KEY, n);
           setAccount(acc);
           setName(n);
+          ensureEncryptionKey(acc);
         }}
       />
     );
   }
 
+  const goTab = (id: Tab) => {
+    if (id !== "camera") setSnapTo(null); // leaving the camera clears a preset friend
+    if (id === "chat") {
+      setChatDot(false);
+      if (tab === "chat") setOpenChat(null); // tapping Chat again goes back to the list
+    }
+    setTab(id);
+  };
+  const snapFriend = (friendName: string) => {
+    setSnapTo(friendName);
+    setTab("camera");
+  };
+  const openProfile = () => setWalletOpen(true);
+
+  const titles: Record<Exclude<Tab, "camera">, string> = { rain: "Rain", chat: "Chat", friends: "Friends", speed: "Speed" };
+  const showTopBar = tab !== "camera" && !(tab === "chat" && openChat);
+
   return (
     <main className="relative mx-auto flex h-dvh w-full max-w-md flex-col overflow-hidden bg-black text-white">
-      <header className="safe-top z-20">
-        <div className="flex items-center justify-between px-4 pt-3 pb-2">
-          <button onClick={() => setWalletOpen(true)} className="text-left">
-            <div className="text-2xl font-black tracking-tight text-whizz">Whizz</div>
-            <div className="text-xs text-white/60">@{name} ›</div>
-          </button>
-          <div className="flex items-center gap-2">
-            <Scoreboard />
-            <button
-              onClick={() => setWalletOpen(true)}
-              className="rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold"
-              title="Open wallet"
-            >
-              👛 {balance === null ? "…" : `${mon(balance, 3)} MON`}
-            </button>
-          </div>
-        </div>
-      </header>
+      {showTopBar && (
+        <header className="safe-top z-20 bg-black">
+          <TopBar
+            name={name}
+            title={titles[tab as Exclude<Tab, "camera">]}
+            onProfile={openProfile}
+            right={
+              tab === "friends" ? undefined : (
+                <button
+                  onClick={() => goTab("friends")}
+                  aria-label="Add friends"
+                  className="flex h-9 w-9 items-center justify-center rounded-full bg-white/10"
+                >
+                  <Icon.AddFriend size={18} />
+                </button>
+              )
+            }
+          />
+        </header>
+      )}
 
-      <section className="relative flex-1 overflow-hidden">
+      <section className={`relative flex-1 overflow-hidden ${tab === "camera" ? "rounded-b-3xl" : ""}`}>
         {tab === "camera" && (
           <Camera
             account={account}
+            name={name}
+            balance={balance}
             presetTo={snapTo}
+            onProfile={openProfile}
+            onSpeed={() => goTab("speed")}
             onSent={(partner) => {
               // Like Snapchat: after sending, jump into that conversation.
               setSnapTo(null);
@@ -170,17 +248,9 @@ export function WhizzApp() {
         )}
         {tab === "chat" &&
           (openChat ? (
-            <ChatThread
-              account={account}
-              partner={openChat}
-              onBack={() => setOpenChat(null)}
-              onSnap={(friendName) => {
-                setSnapTo(friendName);
-                setTab("camera");
-              }}
-            />
+            <ChatThread account={account} partner={openChat} onBack={() => setOpenChat(null)} onSnap={snapFriend} />
           ) : (
-            <ChatList account={account} onOpen={setOpenChat} />
+            <ChatList account={account} onOpen={setOpenChat} onSnap={snapFriend} />
           ))}
         {tab === "rain" && <Rain account={account} focusRainId={rainParam} />}
         {tab === "friends" && (
@@ -188,43 +258,54 @@ export function WhizzApp() {
             account={account}
             myName={name}
             prefillAdd={addParam}
-            onSnap={(friendName) => {
-              setSnapTo(friendName);
-              setTab("camera");
-            }}
+            onSnap={snapFriend}
             onChat={(partner) => {
               setOpenChat(partner);
               setTab("chat");
             }}
           />
         )}
+        {tab === "speed" && <SpeedPage />}
+
+        {/* Background name claim after sign-up. */}
+        <AnimatePresence>
+          {claim && (
+            <motion.div
+              initial={{ y: -40, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: -40, opacity: 0 }}
+              className="safe-top pointer-events-none absolute inset-x-0 top-14 z-30 flex justify-center"
+            >
+              <span className="rounded-full bg-white px-4 py-2 text-sm font-bold text-black shadow-lg">
+                {claim.state === "pending" ? `Claiming @${claim.name} on Monad…` : `You're @${claim.name} ⚡`}
+              </span>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </section>
 
-      <nav className="z-20 grid grid-cols-4 border-t border-white/10 bg-black/90 safe-bottom">
+      <nav className="safe-bottom z-20 grid grid-cols-5 bg-black">
         {(
           [
-            ["chat", "💬", "Chat"],
-            ["camera", "📸", "Camera"],
-            ["friends", "👥", "Friends"],
-            ["rain", "🌧️", "Rain"],
+            ["rain", "Rain", Icon.Rain],
+            ["chat", "Chat", Icon.Chat],
+            ["camera", "Camera", Icon.Camera],
+            ["friends", "Friends", Icon.Friends],
+            ["speed", "Speed", Icon.Bolt],
           ] as const
-        ).map(([id, icon, label]) => (
+        ).map(([id, label, TabIcon]) => (
           <button
             key={id}
-            onClick={() => {
-              if (id !== "camera") setSnapTo(null); // leaving the camera clears a preset friend
-              if (id === "chat") {
-                setChatDot(false);
-                if (tab === "chat") setOpenChat(null); // tapping Chat again goes back to the list
-              }
-              setTab(id);
-            }}
-            className={`relative flex flex-col items-center py-2.5 text-xs ${tab === id ? "text-whizz" : "text-white/50"}`}
+            onClick={() => goTab(id)}
+            aria-label={label}
+            className={`relative flex flex-col items-center gap-0.5 pt-2.5 pb-2 text-[10px] font-semibold ${
+              tab === id ? "text-white" : "text-white/45"
+            }`}
           >
-            <span className="text-xl">{icon}</span>
+            <TabIcon size={24} filled={tab === id && id !== "camera" && id !== "friends"} />
             {label}
             {id === "chat" && chatDot && tab !== "chat" && (
-              <span className="absolute top-2 right-[calc(50%-18px)] h-2.5 w-2.5 rounded-full bg-whizz" aria-label="New messages" />
+              <span className="absolute top-1.5 right-[calc(50%-16px)] h-2.5 w-2.5 rounded-full bg-[#0fadff] ring-2 ring-black" aria-label="New messages" />
             )}
           </button>
         ))}
@@ -243,39 +324,182 @@ export function WhizzApp() {
   );
 }
 
-function Onboarding({ onDone }: { onDone: (acc: PrivateKeyAccount, name: string) => void }) {
-  const [input, setInput] = useState("");
-  const [status, setStatus] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+// ─────────────────────────────── Sign-up ───────────────────────────────
+
+type Availability = "idle" | "checking" | "free" | "taken" | "error";
+
+function Onboarding({
+  initialName,
+  initialError,
+  onSignUp,
+  onRestored,
+}: {
+  initialName?: string;
+  initialError?: string;
+  onSignUp: (acc: PrivateKeyAccount, name: string) => void;
+  onRestored: (acc: PrivateKeyAccount, name: string) => void;
+}) {
+  const [step, setStep] = useState<"welcome" | "username" | "restore">(initialName ? "username" : "welcome");
+  const [input, setInput] = useState(initialName ?? "");
+  const [availability, setAvailability] = useState<Availability>("idle");
+  const [error, setError] = useState<string | null>(initialError ?? null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [restoring, setRestoring] = useState(false);
-  const [keyInput, setKeyInput] = useState("");
-  const [taken, setTaken] = useState(false);
   const valid = /^[a-z0-9_]{3,20}$/.test(input);
 
-  // Live "name taken?" check + gas estimate for sign-up, once typing pauses.
+  // Live "is this name free?" check (+ pre-estimate the sign-up gas) once typing pauses.
   useEffect(() => {
     if (!valid) return;
-    let cancelled = false; // a slow answer for "abc" must not mark "abcd" as taken
+    let cancelled = false; // a slow answer for "abc" must not decide "abcd"
     const t = setTimeout(async () => {
-      const owner = await addressForName(input).catch(() => null);
-      if (cancelled) return;
-      if (owner) return setTaken(true);
-      const acc = loadOrCreateAccount();
-      // Cached inside estimateWhizzGas, so "Let's go" can skip this round trip.
-      void estimateWhizzGas({
-        account: acc,
-        functionName: "register",
-        args: [input, encryptionPublicKey(exportPrivateKey()!)],
-      }).catch(() => {});
-    }, 300);
+      setAvailability("checking");
+      try {
+        const owner = await addressForName(input);
+        if (cancelled) return;
+        setAvailability(owner ? "taken" : "free");
+        if (!owner) {
+          // Cached inside estimateWhizzGas, so the background claim skips this round trip.
+          void estimateWhizzGas({
+            account: loadOrCreateAccount(),
+            functionName: "register",
+            args: [input, encryptionPublicKey(exportPrivateKey()!)],
+          }).catch(() => {});
+        }
+      } catch {
+        if (!cancelled) setAvailability("error");
+      }
+    }, 250);
     return () => {
       cancelled = true;
       clearTimeout(t);
     };
   }, [input, valid]);
 
-  // Bring back a backed-up wallet (from Wallet → "Show private key").
+  if (step === "welcome") {
+    return (
+      <main className="safe-top safe-bottom mx-auto flex h-dvh w-full max-w-md flex-col bg-whizz text-black">
+        <div className="flex flex-1 flex-col items-center justify-center gap-4">
+          <div className="flex h-28 w-28 items-center justify-center rounded-[2rem] bg-black text-whizz shadow-2xl">
+            <Icon.Bolt size={64} filled />
+          </div>
+          <h1 className="text-5xl font-black tracking-tight">Whizz</h1>
+          <p className="max-w-[16rem] text-center text-lg font-semibold text-black/70">Snap money to your friends. Faster than a blink.</p>
+        </div>
+        <div className="space-y-3 p-6">
+          <button
+            onClick={() => {
+              // Create the wallet and fetch gas NOW, while they pick a name.
+              void fundWallet().catch(() => {});
+              setStep("username");
+            }}
+            className="w-full rounded-full bg-black py-4 text-lg font-extrabold text-white active:scale-[0.98]"
+          >
+            Sign up
+          </button>
+          <button
+            onClick={() => setStep("restore")}
+            className="w-full rounded-full bg-white/90 py-4 text-lg font-extrabold text-black active:scale-[0.98]"
+          >
+            Log in with a backup key
+          </button>
+          <p className="pt-1 text-center text-xs font-semibold text-black/60">Your wallet lives on this phone · Monad testnet</p>
+        </div>
+      </main>
+    );
+  }
+
+  if (step === "restore") {
+    return (
+      <Restore
+        onBack={() => setStep("welcome")}
+        onRestored={onRestored}
+        onNeedsName={() => {
+          setNotice("Wallet restored ✓ Now pick a username.");
+          setStep("username");
+        }}
+      />
+    );
+  }
+
+  const status: { text: string; tone: "ok" | "bad" | "muted" } | null = !input
+    ? null
+    : !valid
+      ? { text: "3–20 characters: a–z, 0–9 and _", tone: "muted" }
+      : availability === "checking" || availability === "idle"
+        ? { text: "Checking…", tone: "muted" }
+        : availability === "taken"
+          ? { text: `@${input} is taken`, tone: "bad" }
+          : availability === "error"
+            ? { text: "Couldn't check right now — you can still try", tone: "muted" }
+            : { text: `@${input} is available`, tone: "ok" };
+  const canContinue = valid && (availability === "free" || availability === "error");
+
+  return (
+    <main className="safe-top safe-bottom mx-auto flex h-dvh w-full max-w-md flex-col bg-black text-white">
+      <div className="px-4 pt-3">
+        <button onClick={() => setStep("welcome")} aria-label="Back" className="p-2 text-whizz">
+          <Icon.Back size={26} />
+        </button>
+      </div>
+      <div className="flex flex-1 flex-col items-center px-8 pt-10 text-center">
+        <h1 className="text-3xl font-black">Pick a username</h1>
+        <p className="mt-2 text-white/60">It&apos;s how friends find you and send you snaps.</p>
+        {notice && <p className="mt-3 text-sm font-semibold text-whizz">{notice}</p>}
+        <label className="mt-10 w-full border-b-2 border-white/20 pb-2 text-left focus-within:border-whizz">
+          <span className="text-xs font-bold tracking-wide text-white/50 uppercase">Username</span>
+          <input
+            autoFocus
+            value={input}
+            onChange={(e) => {
+              setInput(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ""));
+              setAvailability("idle");
+              setError(null);
+            }}
+            maxLength={20}
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            className="mt-1 w-full bg-transparent text-2xl font-bold outline-none"
+          />
+        </label>
+        {status && (
+          <p
+            className={`mt-3 flex items-center gap-1.5 self-start text-sm font-semibold ${
+              status.tone === "ok" ? "text-[#18c37d]" : status.tone === "bad" ? "text-[#f23c57]" : "text-white/50"
+            }`}
+          >
+            {status.tone === "ok" && <Icon.Check size={16} />}
+            {status.text}
+          </p>
+        )}
+        {error && <p className="mt-3 self-start text-left text-sm font-semibold text-[#f23c57]">{error}</p>}
+      </div>
+      <div className="p-6">
+        <button
+          disabled={!canContinue}
+          onClick={() => onSignUp(loadOrCreateAccount(), input)}
+          className="w-full rounded-full bg-whizz py-4 text-lg font-extrabold text-black active:scale-[0.98] disabled:opacity-30"
+        >
+          Continue
+        </button>
+      </div>
+    </main>
+  );
+}
+
+/** Bring back a backed-up wallet (from Profile → "Show private key"). */
+function Restore({
+  onBack,
+  onRestored,
+  onNeedsName,
+}: {
+  onBack: () => void;
+  onRestored: (acc: PrivateKeyAccount, name: string) => void;
+  onNeedsName: () => void;
+}) {
+  const [keyInput, setKeyInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
   const restore = async () => {
     setError(null);
     const key = normalizePrivateKey(keyInput);
@@ -287,7 +511,7 @@ function Onboarding({ onDone }: { onDone: (acc: PrivateKeyAccount, name: string)
     if (current && current !== key && !window.confirm("This replaces the wallet currently on this device. Continue?")) {
       return;
     }
-    setStatus("Restoring wallet…");
+    setBusy(true);
     try {
       const acc = importPrivateKey(key);
       const n = await publicClient.readContract({
@@ -296,26 +520,24 @@ function Onboarding({ onDone }: { onDone: (acc: PrivateKeyAccount, name: string)
         functionName: "nameOf",
         args: [acc.address],
       });
-      if (n) {
-        onDone(acc, n); // already has a username → straight into the app
-        return;
-      }
-      setRestoring(false);
-      setKeyInput("");
-      setNotice("Wallet restored ✓ Now pick a username.");
+      if (n) onRestored(acc, n); // already has a username → straight into the app
+      else onNeedsName();
     } catch (e) {
       setError(friendlyError(e));
     }
-    setStatus(null);
+    setBusy(false);
   };
 
-  if (restoring) {
-    return (
-      <main className="mx-auto flex h-dvh w-full max-w-md flex-col justify-center gap-5 bg-black px-6 text-white">
-        <div>
-          <h1 className="text-4xl font-black tracking-tight text-whizz">Restore wallet</h1>
-          <p className="mt-2 text-white/70">Paste the private key you backed up from Whizz.</p>
-        </div>
+  return (
+    <main className="safe-top safe-bottom mx-auto flex h-dvh w-full max-w-md flex-col bg-black text-white">
+      <div className="px-4 pt-3">
+        <button onClick={onBack} aria-label="Back" className="p-2 text-whizz">
+          <Icon.Back size={26} />
+        </button>
+      </div>
+      <div className="flex flex-1 flex-col px-8 pt-10">
+        <h1 className="text-center text-3xl font-black">Log in</h1>
+        <p className="mt-2 text-center text-white/60">Paste the private key you backed up from Profile.</p>
         <textarea
           value={keyInput}
           onChange={(e) => setKeyInput(e.target.value)}
@@ -324,101 +546,29 @@ function Onboarding({ onDone }: { onDone: (acc: PrivateKeyAccount, name: string)
           autoCapitalize="none"
           autoCorrect="off"
           spellCheck={false}
-          className="rounded-2xl bg-white/10 p-4 font-mono text-sm outline-none"
+          className="mt-8 rounded-2xl bg-white/10 p-4 font-mono text-sm outline-none focus:ring-2 focus:ring-whizz"
         />
-        <button
-          disabled={!keyInput.trim() || status !== null}
-          onClick={restore}
-          className="rounded-2xl bg-whizz py-4 text-lg font-bold text-black disabled:opacity-40"
-        >
-          {status ?? "Restore"}
-        </button>
-        {error && <p className="text-center text-sm text-red-400">{error}</p>}
-        <button
-          onClick={() => {
-            setRestoring(false);
-            setError(null);
-          }}
-          className="text-sm text-white/50"
-        >
-          ← Back
-        </button>
-      </main>
-    );
-  }
-
-  const go = async () => {
-    setError(null);
-    try {
-      // Usually already done while you were typing (see onType) — then this is instant.
-      setStatus("Getting you some gas ⛽");
-      const acc = await fundWallet();
-      // Claim the username + publish the key private snaps are encrypted to (one tx).
-      setStatus("Claiming your name on Monad ⚡");
-      const pubKey = encryptionPublicKey(exportPrivateKey()!);
-      await writeWhizz({ account: acc, functionName: "register", args: [input, pubKey], label: "register" });
-      onDone(acc, input);
-    } catch (e) {
-      setError(friendlyError(e));
-      setStatus(null);
-    }
-  };
-
-  const onType = (value: string) => {
-    setInput(value);
-    setTaken(false);
-    // Start getting gas on the first keystroke, not on "Let's go": fresh funds
-    // need a moment before Monad lets you spend them, and that moment now passes
-    // while you're still typing.
-    if (value) void fundWallet().catch(() => {}); // a failure is retried (and shown) on "Let's go"
-  };
-
-  return (
-    <main className="mx-auto flex h-dvh w-full max-w-md flex-col justify-center gap-6 bg-black px-6 text-white">
-      <div>
-        <h1 className="text-6xl font-black tracking-tight text-whizz">Whizz</h1>
-        <p className="mt-2 text-lg text-white/70">Snap money to your friends. Faster than a blink.</p>
+        {error && <p className="mt-3 text-sm font-semibold text-[#f23c57]">{error}</p>}
       </div>
-      <label className="flex items-center rounded-2xl bg-white/10 px-4 py-3 text-lg">
-        <span className="text-white/50">@</span>
-        <input
-          autoFocus
-          value={input}
-          onChange={(e) => onType(e.target.value.toLowerCase())}
-          placeholder="pick a username"
-          maxLength={20}
-          className="ml-1 flex-1 bg-transparent outline-none"
-        />
-      </label>
-      <button
-        disabled={!valid || taken || status !== null}
-        onClick={go}
-        className="rounded-2xl bg-whizz py-4 text-lg font-bold text-black disabled:opacity-40"
-      >
-        {status ?? "Let's go ⚡"}
-      </button>
-      {taken && !status && <p className="text-center text-sm text-red-400">@{input} is taken 😬 — try another</p>}
-      {notice && <p className="text-center text-sm text-whizz">{notice}</p>}
-      {error && <p className="text-center text-sm text-red-400">{error}</p>}
-      <p className="text-center text-xs text-white/40">A wallet is created on this device. Testnet only.</p>
-      <button
-        onClick={() => {
-          setRestoring(true);
-          setError(null);
-          setNotice(null);
-        }}
-        className="text-sm text-white/60 underline"
-      >
-        Already have a Whizz wallet? Restore it
-      </button>
+      <div className="p-6">
+        <button
+          disabled={!keyInput.trim() || busy}
+          onClick={restore}
+          className="w-full rounded-full bg-whizz py-4 text-lg font-extrabold text-black active:scale-[0.98] disabled:opacity-30"
+        >
+          {busy ? "Logging in…" : "Log in"}
+        </button>
+      </div>
     </main>
   );
 }
 
 function Splash() {
   return (
-    <main className="flex h-dvh items-center justify-center bg-black">
-      <div className="animate-pulse text-5xl font-black text-whizz">Whizz</div>
+    <main className="flex h-dvh items-center justify-center bg-whizz">
+      <div className="flex h-24 w-24 animate-pulse items-center justify-center rounded-[1.75rem] bg-black text-whizz">
+        <Icon.Bolt size={56} filled />
+      </div>
     </main>
   );
 }
