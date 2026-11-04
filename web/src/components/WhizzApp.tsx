@@ -7,7 +7,7 @@ import { WHIZZ_ADDRESS } from "@/lib/chain";
 import { mon } from "@/lib/format";
 import { friendlyError, warmUp, writeWhizz } from "@/lib/tx";
 import { requestDrip, useBalance } from "@/lib/useBalance";
-import { hasAccount, loadOrCreateAccount } from "@/lib/wallet";
+import { exportPrivateKey, hasAccount, importPrivateKey, loadOrCreateAccount, normalizePrivateKey } from "@/lib/wallet";
 import { publicClient } from "@/lib/chain";
 import { whizzAbi } from "@/lib/abi";
 
@@ -15,6 +15,7 @@ import { Camera } from "./Camera";
 import { Inbox } from "./Inbox";
 import { Rain } from "./Rain";
 import { Scoreboard } from "./Scoreboard";
+import { Wallet } from "./Wallet";
 
 type Tab = "camera" | "inbox" | "rain";
 
@@ -24,6 +25,7 @@ export function WhizzApp() {
   const [ready, setReady] = useState(false);
   const [tab, setTab] = useState<Tab>("camera");
   const [rainParam, setRainParam] = useState<bigint | null>(null);
+  const [walletOpen, setWalletOpen] = useState(false);
   const { balance, refresh } = useBalance(account?.address);
 
   // On first load: restore the burner wallet (if any) and its username.
@@ -65,22 +67,18 @@ export function WhizzApp() {
     <main className="relative mx-auto flex h-dvh w-full max-w-md flex-col overflow-hidden bg-black text-white">
       <header className="safe-top z-20">
         <div className="flex items-center justify-between px-4 pt-3 pb-2">
-          <div>
+          <button onClick={() => setWalletOpen(true)} className="text-left">
             <div className="text-2xl font-black tracking-tight text-whizz">Whizz</div>
-            <div className="text-xs text-white/60">@{name}</div>
-          </div>
+            <div className="text-xs text-white/60">@{name} ›</div>
+          </button>
           <div className="flex items-center gap-2">
             <Scoreboard />
             <button
-              onClick={async () => {
-                const err = await requestDrip(account.address);
-                if (err) alert(err);
-                void refresh();
-              }}
+              onClick={() => setWalletOpen(true)}
               className="rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold"
-              title="Top up gas"
+              title="Open wallet"
             >
-              {balance === null ? "…" : `${mon(balance, 3)} MON`}
+              👛 {balance === null ? "…" : `${mon(balance, 3)} MON`}
             </button>
           </div>
         </div>
@@ -110,6 +108,16 @@ export function WhizzApp() {
           </button>
         ))}
       </nav>
+
+      {walletOpen && (
+        <Wallet
+          account={account}
+          name={name}
+          balance={balance}
+          onRefresh={() => void refresh()}
+          onClose={() => setWalletOpen(false)}
+        />
+      )}
     </main>
   );
 }
@@ -118,7 +126,82 @@ function Onboarding({ onDone }: { onDone: (acc: PrivateKeyAccount, name: string)
   const [input, setInput] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState(false);
+  const [keyInput, setKeyInput] = useState("");
   const valid = /^[a-z0-9_]{3,20}$/.test(input);
+
+  // Bring back a backed-up wallet (from Wallet → "Show private key").
+  const restore = async () => {
+    setError(null);
+    const key = normalizePrivateKey(keyInput);
+    if (!key) {
+      setError("That doesn't look like a private key (64 hex characters).");
+      return;
+    }
+    const current = exportPrivateKey();
+    if (current && current !== key && !window.confirm("This replaces the wallet currently on this device. Continue?")) {
+      return;
+    }
+    setStatus("Restoring wallet…");
+    try {
+      const acc = importPrivateKey(key);
+      const n = await publicClient.readContract({
+        address: WHIZZ_ADDRESS!,
+        abi: whizzAbi,
+        functionName: "nameOf",
+        args: [acc.address],
+      });
+      if (n) {
+        onDone(acc, n); // already has a username → straight into the app
+        return;
+      }
+      setRestoring(false);
+      setKeyInput("");
+      setNotice("Wallet restored ✓ Now pick a username.");
+    } catch (e) {
+      setError(friendlyError(e));
+    }
+    setStatus(null);
+  };
+
+  if (restoring) {
+    return (
+      <main className="mx-auto flex h-dvh w-full max-w-md flex-col justify-center gap-5 bg-black px-6 text-white">
+        <div>
+          <h1 className="text-4xl font-black tracking-tight text-whizz">Restore wallet</h1>
+          <p className="mt-2 text-white/70">Paste the private key you backed up from Whizz.</p>
+        </div>
+        <textarea
+          value={keyInput}
+          onChange={(e) => setKeyInput(e.target.value)}
+          placeholder="0x…"
+          rows={3}
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
+          className="rounded-2xl bg-white/10 p-4 font-mono text-sm outline-none"
+        />
+        <button
+          disabled={!keyInput.trim() || status !== null}
+          onClick={restore}
+          className="rounded-2xl bg-whizz py-4 text-lg font-bold text-black disabled:opacity-40"
+        >
+          {status ?? "Restore"}
+        </button>
+        {error && <p className="text-center text-sm text-red-400">{error}</p>}
+        <button
+          onClick={() => {
+            setRestoring(false);
+            setError(null);
+          }}
+          className="text-sm text-white/50"
+        >
+          ← Back
+        </button>
+      </main>
+    );
+  }
 
   const go = async () => {
     setError(null);
@@ -166,8 +249,19 @@ function Onboarding({ onDone }: { onDone: (acc: PrivateKeyAccount, name: string)
       >
         {status ?? "Let's go ⚡"}
       </button>
+      {notice && <p className="text-center text-sm text-whizz">{notice}</p>}
       {error && <p className="text-center text-sm text-red-400">{error}</p>}
       <p className="text-center text-xs text-white/40">A wallet is created on this device. Testnet only.</p>
+      <button
+        onClick={() => {
+          setRestoring(true);
+          setError(null);
+          setNotice(null);
+        }}
+        className="text-sm text-white/60 underline"
+      >
+        Already have a Whizz wallet? Restore it
+      </button>
     </main>
   );
 }

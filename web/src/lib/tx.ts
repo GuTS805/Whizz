@@ -94,6 +94,66 @@ async function sendSigned(serializedTransaction: Hex): Promise<TransactionReceip
   }
 }
 
+/**
+ * Shared send path for EVERY transaction (contract calls and plain MON transfers):
+ * cached fees → local nonce → sign → one-call send → scoreboard stats.
+ * `started` is when the user tapped, so the scoreboard measures the full wait.
+ */
+async function signAndSend(opts: {
+  account: PrivateKeyAccount;
+  to: `0x${string}`;
+  data?: Hex;
+  value?: bigint;
+  gas: bigint;
+  label: string;
+  started: number;
+}): Promise<TransactionReceipt> {
+  const { account, to, data, value, gas, label, started } = opts;
+
+  let receipt: TransactionReceipt;
+  try {
+    const { maxFeePerGas, maxPriorityFeePerGas } = await getFees();
+    const nonce = await account.nonceManager!.consume({
+      address: account.address,
+      chainId: monadTestnet.id,
+      client: publicClient,
+    });
+    const signed = await account.signTransaction({
+      chainId: monadTestnet.id,
+      type: "eip1559",
+      to,
+      data,
+      value: value ?? 0n,
+      gas,
+      nonce,
+      maxFeePerGas,
+      maxPriorityFeePerGas,
+    });
+    try {
+      receipt = await sendSigned(signed);
+    } catch (e) {
+      // The tx never made it on-chain, so its nonce is unused — resync from the chain.
+      account.nonceManager!.reset({ address: account.address, chainId: monadTestnet.id });
+      throw e;
+    }
+  } catch (e) {
+    statsStore.resolvePending(); // nothing confirmed — just clear the ⏳ counter
+    throw e;
+  }
+
+  statsStore.resolvePending({
+    hash: receipt.transactionHash,
+    label,
+    latencyMs: Math.round(performance.now() - started),
+    gasUsed: receipt.gasUsed,
+    gasLimit: gas,
+    gasPrice: receipt.effectiveGasPrice,
+    block: receipt.blockNumber,
+  });
+  if (receipt.status !== "success") throw new WhizzTxError(`${label} reverted on-chain`);
+  return receipt;
+}
+
 export async function writeWhizz<F extends WriteFn>(opts: {
   account: PrivateKeyAccount;
   functionName: F;
@@ -109,6 +169,7 @@ export async function writeWhizz<F extends WriteFn>(opts: {
 
   statsStore.addPending();
   const started = performance.now();
+  let resolved = false;
   try {
     let gas = cacheable ? gasCache.get(functionName) : undefined;
     if (!gas) {
@@ -124,48 +185,53 @@ export async function writeWhizz<F extends WriteFn>(opts: {
       gas = (estimate * BUFFER_PCT) / 100n;
       if (cacheable) gasCache.set(functionName, gas);
     }
-
-    const { maxFeePerGas, maxPriorityFeePerGas } = await getFees();
-    const nonce = await account.nonceManager!.consume({
-      address: account.address,
-      chainId: monadTestnet.id,
-      client: publicClient,
-    });
-    const signed = await account.signTransaction({
-      chainId: monadTestnet.id,
-      type: "eip1559",
-      to: WHIZZ_ADDRESS,
-      data,
-      value: value ?? 0n,
-      gas,
-      nonce,
-      maxFeePerGas,
-      maxPriorityFeePerGas,
-    });
-
-    let receipt: TransactionReceipt;
-    try {
-      receipt = await sendSigned(signed);
-    } catch (e) {
-      // The tx never made it on-chain, so its nonce is unused — resync from the chain.
-      account.nonceManager!.reset({ address: account.address, chainId: monadTestnet.id });
-      throw e;
-    }
-    const latencyMs = Math.round(performance.now() - started);
-
-    statsStore.resolvePending({
-      hash: receipt.transactionHash,
-      label,
-      latencyMs,
-      gasUsed: receipt.gasUsed,
-      gasLimit: gas,
-      gasPrice: receipt.effectiveGasPrice,
-      block: receipt.blockNumber,
-    });
-    if (receipt.status !== "success") throw new WhizzTxError(`${label} reverted on-chain`);
-    return receipt;
+    resolved = true; // signAndSend records the stats from here on
+    return await signAndSend({ account, to: WHIZZ_ADDRESS, data, value, gas, label, started });
   } catch (err) {
-    statsStore.resolvePending();
+    if (!resolved) statsStore.resolvePending();
+    throw new WhizzTxError(friendlyError(err));
+  }
+}
+
+/** A plain MON transfer always uses exactly this much gas (when sent to a normal wallet). */
+export const TRANSFER_GAS = 21_000n;
+/** Kept back on "Max" so a rounding or fee wobble can never make the send fail. */
+const MAX_SEND_MARGIN = 1_000_000_000_000_000n; // 0.001 MON
+
+/**
+ * The most this wallet can send right now: balance minus the gas it will be
+ * charged (Monad bills gas LIMIT × max fee) minus a small safety margin.
+ */
+export async function maxSendable(balance: bigint): Promise<bigint> {
+  const { maxFeePerGas } = await getFees();
+  const max = balance - TRANSFER_GAS * maxFeePerGas - MAX_SEND_MARGIN;
+  return max > 0n ? max : 0n;
+}
+
+/** Send MON from the in-app wallet to any address (Withdraw). */
+export async function sendMon(opts: {
+  account: PrivateKeyAccount;
+  to: `0x${string}`;
+  value: bigint;
+}): Promise<TransactionReceipt> {
+  const { account, to, value } = opts;
+  statsStore.addPending();
+  const started = performance.now();
+  let resolved = false;
+  try {
+    // Sending to a normal wallet (no contract code) costs exactly 21,000 gas —
+    // the same amount maxSendable() reserves. Monad's estimate pads transfers
+    // (~21,165) and Monad bills the full limit, so we use the exact figure.
+    // A contract recipient may need more: estimate it and add the usual buffer.
+    const code = await publicClient.getCode({ address: to });
+    const isContract = code !== undefined && code !== "0x";
+    const gas = isContract
+      ? ((await publicClient.estimateGas({ account, to, value })) * BUFFER_PCT) / 100n
+      : TRANSFER_GAS;
+    resolved = true;
+    return await signAndSend({ account, to, value, gas, label: "withdraw", started });
+  } catch (err) {
+    if (!resolved) statsStore.resolvePending();
     throw new WhizzTxError(friendlyError(err));
   }
 }
