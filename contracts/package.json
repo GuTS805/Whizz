@@ -1,0 +1,19 @@
+{
+  "name": "whizz-contracts",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "hardhat build",
+    "test": "hardhat test",
+    "deploy:testnet": "hardhat run scripts/deploy.ts --network monadTestnet"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox-viem": "^5.0.7",
+    "@types/node": "^22.8.5",
+    "hardhat": "^3.21.2",
+    "solc": "^0.8.34",
+    "typescript": "~6.0.3",
+    "viem": "^2.57.16"
+  }
+}

@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Secrets — never commit private keys or API keys
+.env
+.env.*
+!.env.example
+
+# Hardhat build output
+contracts/artifacts/
+contracts/cache/
+contracts/types/
+contracts/coverage/
+contracts/ignition/deployments/chain-31337/
+contracts/dist/
+
+# Next.js
+web/.next/
+web/out/
+web/next-env.d.ts
+*.tsbuildinfo
+.vercel
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+*.log
+contracts/.gas-snapshot
+contracts/snapshots/
