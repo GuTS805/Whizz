@@ -1,0 +1,122 @@
+"use client";
+
+import {
+  BaseError,
+  ContractFunctionRevertedError,
+  encodeFunctionData,
+  type ContractFunctionArgs,
+  type ContractFunctionName,
+  type PrivateKeyAccount,
+  type TransactionReceipt,
+} from "viem";
+
+import { whizzAbi } from "./abi";
+import { monadTestnet, publicClient, WHIZZ_ADDRESS } from "./chain";
+import { statsStore } from "./stats";
+import { walletFor } from "./wallet";
+
+type WriteFn = ContractFunctionName<typeof whizzAbi, "nonpayable" | "payable">;
+
+/**
+ * Monad charges the gas LIMIT you set, not the gas you actually use.
+ * So instead of a generous default limit we estimate, add a small safety
+ * buffer, and cache it per function (except sendSnap, whose cost depends on
+ * the photo size).
+ */
+const gasCache = new Map<string, bigint>();
+const BUFFER_PCT = 115n;
+
+export class WhizzTxError extends Error {}
+
+export async function writeWhizz<F extends WriteFn>(opts: {
+  account: PrivateKeyAccount;
+  functionName: F;
+  args: ContractFunctionArgs<typeof whizzAbi, "nonpayable" | "payable", F>;
+  value?: bigint;
+  label?: string;
+}): Promise<TransactionReceipt> {
+  if (!WHIZZ_ADDRESS) throw new WhizzTxError("Contract not deployed yet — run the deploy script.");
+  const { account, functionName, args, value, label = functionName } = opts;
+
+  const data = encodeFunctionData({ abi: whizzAbi, functionName, args } as never);
+  const cacheable = functionName !== "sendSnap";
+
+  statsStore.addPending();
+  const started = performance.now();
+  try {
+    let gas = cacheable ? gasCache.get(functionName) : undefined;
+    if (!gas) {
+      // estimateGas simulates the call, so a revert (e.g. "SnapExpired") surfaces here, before paying.
+      const estimate = await publicClient.estimateContractGas({
+        address: WHIZZ_ADDRESS,
+        abi: whizzAbi,
+        functionName,
+        args,
+        account,
+        value,
+      } as never);
+      gas = (estimate * BUFFER_PCT) / 100n;
+      if (cacheable) gasCache.set(functionName, gas);
+    }
+
+    const hash = await walletFor(account).sendTransaction({
+      account,
+      chain: monadTestnet,
+      to: WHIZZ_ADDRESS,
+      data,
+      value,
+      gas,
+    });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash, pollingInterval: 100 });
+    const latencyMs = Math.round(performance.now() - started);
+
+    statsStore.resolvePending({
+      hash,
+      label,
+      latencyMs,
+      gasUsed: receipt.gasUsed,
+      gasLimit: gas,
+      gasPrice: receipt.effectiveGasPrice,
+      block: receipt.blockNumber,
+    });
+    if (receipt.status !== "success") throw new WhizzTxError(`${label} reverted on-chain`);
+    return receipt;
+  } catch (err) {
+    statsStore.resolvePending();
+    throw new WhizzTxError(friendlyError(err));
+  }
+}
+
+/** Turns viem errors into short, human messages (custom error names from the contract). */
+export function friendlyError(err: unknown): string {
+  if (err instanceof WhizzTxError) return err.message;
+  if (err instanceof BaseError) {
+    const revert = err.walk((e) => e instanceof ContractFunctionRevertedError);
+    if (revert instanceof ContractFunctionRevertedError && revert.data?.errorName) {
+      return ERROR_TEXT[revert.data.errorName] ?? revert.data.errorName;
+    }
+    if (/insufficient funds/i.test(err.message)) return "Not enough MON for gas — tap 'Get gas'.";
+    return err.shortMessage;
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
+const ERROR_TEXT: Record<string, string> = {
+  InvalidName: "Names are 3–20 chars: a-z, 0-9, _",
+  NameTaken: "That name is taken 😬",
+  InvalidRecipient: "Can't send to that user",
+  InvalidDuration: "Pick a valid timer",
+  NotRecipient: "This snap isn't for you",
+  NotParticipant: "You're not in this snap",
+  SnapExpired: "Too late — this snap went poof 💨",
+  SnapNotExpired: "Not expired yet",
+  NothingLeft: "Nothing left in this snap",
+  UnknownSnap: "Snap not found",
+  UnknownRain: "Rain not found",
+  InvalidDrops: "Total must split evenly into drops",
+  RainOver: "This rain is over ☀️",
+  AlreadyCaught: "You already caught a drop 💧",
+  CannotCatchOwnRain: "Can't catch your own rain",
+  RainStillActive: "Rain is still going",
+  TransferFailed: "Transfer failed",
+};

@@ -1,0 +1,15 @@
+@import "tailwindcss";
+
+/* Monad purple — used as `bg-whizz`, `text-whizz`, etc. */
+@theme {
+  --color-whizz: #836ef9;
+}
+
+body {
+  background: #000;
+  color: #fff;
+  /* System fonts: no font download at build time, looks native on every phone. */
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
