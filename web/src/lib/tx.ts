@@ -53,6 +53,7 @@ export function warmUp() {
 export class WhizzTxError extends Error {}
 
 const isInsufficientBalance = (e: unknown) => /insufficient balance|insufficient funds/i.test(String((e as Error)?.message ?? e));
+const isRateLimited = (e: unknown) => /429|rate limit/i.test(String((e as Error)?.message ?? e));
 const isAlreadyKnown = (e: unknown) => /already known|nonce too low|known transaction/i.test(String((e as Error)?.message ?? e));
 
 /**
@@ -74,6 +75,11 @@ async function sendSigned(serializedTransaction: Hex): Promise<TransactionReceip
         continue;
       }
       if (isInsufficientBalance(err)) throw err;
+      // HTTP 429 = rejected before processing, so resending the same signed tx is safe.
+      if (isRateLimited(err) && attempt < 6) {
+        await new Promise((r) => setTimeout(r, 300 * 2 ** Math.min(attempt, 4) + Math.random() * 300));
+        continue;
+      }
       // Sync method unavailable / flaky: broadcast normally (ignore "already known"
       // in case the sync call did broadcast) and poll for the receipt by hash.
       await publicClient.sendRawTransaction({ serializedTransaction }).catch((e) => {
