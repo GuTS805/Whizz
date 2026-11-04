@@ -5,7 +5,7 @@
   "scripts": {
     "sync": "cap sync android",
     "open": "cap open android",
-    "build:apk": "cap sync android && cd android && gradlew.bat assembleDebug"
+    "build:apk": "node scripts/build-apk.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.6.0",

@@ -41,7 +41,7 @@ This only works with fast blocks, cheap transactions and high throughput.
 
 | Folder | What |
 | --- | --- |
-| `contracts/` | `Whizz.sol` escrow contract, 12 tests, deploy scripts (Hardhat 3) |
+| `contracts/` | `Whizz.sol` escrow contract, full test suite, deploy scripts (Hardhat 3) |
 | `web/` | Next.js mobile web app (viem, Tailwind, Motion) |
 | `mobile/` | Android app (Capacitor) — native shell around the hosted web app |
 
@@ -80,12 +80,16 @@ Requires Android Studio (SDK) and JDK 21.
 cd mobile
 npm install
 # put the hosted https URL in whizz.config.json → { "appUrl": "https://..." }
-npm run sync                  # copies config into the Android project
-cd android && ./gradlew assembleDebug
-# APK: mobile/android/app/build/outputs/apk/debug/app-debug.apk
+npm run build:apk             # debug APK (Windows, macOS and Linux)
+npm run build:apk -- release  # signed release APK (needs android/keystore.properties)
 ```
 
-Install on a USB-connected phone with `adb install -r app/build/outputs/apk/debug/app-debug.apk`,
-or open the project in Android Studio with `npm run open`.
+APKs land in `mobile/android/app/build/outputs/apk/`. Install on a USB-connected
+phone with `adb install -r <apk>`, or open the project in Android Studio with `npm run open`.
+
+Release builds are signed with `android/whizz-release.jks`, configured in
+`android/keystore.properties` (both git-ignored — back them up; without them you
+can't ship updates). A release build refuses to run if the app URL is still the
+localhost USB dev mode.
 
 > On Windows PowerShell, use `npm.cmd` / `npx.cmd` if script execution is disabled.
