@@ -10,3 +10,6 @@ android/captures/
 *.aab
 *.keystore
 *.jks
+
+# Release signing — the key and its password must never be committed
+android/keystore.properties
