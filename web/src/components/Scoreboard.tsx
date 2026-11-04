@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { createPublicClient, formatEther, http } from "viem";
 import { mainnet } from "viem/chains";
 
-import { explorerTx } from "@/lib/chain";
+import { explorerTx, publicClient } from "@/lib/chain";
 import { useWhizzEvents } from "@/lib/events";
 import { mon } from "@/lib/format";
 import { summarize, useStats } from "@/lib/stats";
@@ -27,13 +27,27 @@ export function Scoreboard() {
   // Keep the shared event poller alive so "network events" counts everyone's activity.
   useWhizzEvents(() => {});
 
+  const [ethUsd, setEthUsd] = useState<number | null>(null);
+  const [monadBlockMs, setMonadBlockMs] = useState<number | null>(null);
+
   useEffect(() => {
     if (!open) return;
     ethClient.getGasPrice().then(setEthGasPrice).catch(() => setEthGasPrice(null));
+    fetch("https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd")
+      .then((r) => r.json())
+      .then((j: { ethereum?: { usd?: number } }) => setEthUsd(j.ethereum?.usd ?? null))
+      .catch(() => setEthUsd(null));
+    // Measure Monad's real block time from the last 200 block timestamps.
+    (async () => {
+      const latest = await publicClient.getBlock();
+      const older = await publicClient.getBlock({ blockNumber: latest.number - 200n });
+      setMonadBlockMs(Math.round((Number(latest.timestamp - older.timestamp) * 1000) / 200));
+    })().catch(() => setMonadBlockMs(null));
   }, [open]);
 
   const gasUsed = txs.reduce((sum, t) => sum + t.gasUsed, 0n);
   const ethCost = ethGasPrice !== null ? gasUsed * ethGasPrice : null;
+  const ethCostUsd = ethCost !== null && ethUsd !== null ? Number(formatEther(ethCost)) * ethUsd : null;
 
   return (
     <>
@@ -57,20 +71,38 @@ export function Scoreboard() {
               <Stat label="Live Whizz events (everyone)" value={`${networkEvents}`} />
             </div>
 
+            {/* Speed: like-for-like block times. */}
             <div className="mt-4 rounded-2xl bg-white/5 p-4 text-sm">
+              <div className="mb-2 text-xs font-semibold text-white/60">Block time</div>
+              <Bar label="Monad (measured now)" ms={monadBlockMs} max={12_000} highlight />
+              <Bar label="Ethereum (fixed 12s slot)" ms={12_000} max={12_000} />
+              {monadBlockMs && (
+                <p className="mt-2 text-center text-lg font-black text-whizz">
+                  {Math.round(12_000 / monadBlockMs)}× faster blocks
+                </p>
+              )}
+            </div>
+
+            {/* Cost: your exact gas, priced on Ethereum mainnet right now. */}
+            <div className="mt-3 rounded-2xl bg-white/5 p-4 text-sm">
               <div className="flex justify-between">
-                <span className="text-white/60">You paid on Monad</span>
-                <span className="font-bold">{s ? `${mon(s.totalFee, 6)} MON` : "—"}</span>
-              </div>
-              <div className="mt-2 flex justify-between">
-                <span className="text-white/60">Same gas on Ethereum now</span>
+                <span className="text-white/60">Your {s?.count ?? 0} txs on Ethereum now</span>
                 <span className="font-bold">
-                  {ethCost === null ? "…" : `${Number(formatEther(ethCost)).toPrecision(3)} ETH`}
+                  {ethCostUsd !== null
+                    ? `$${ethCostUsd.toFixed(2)}`
+                    : ethCost !== null
+                      ? `${Number(formatEther(ethCost)).toPrecision(3)} ETH`
+                      : "…"}
                 </span>
               </div>
+              <div className="mt-2 flex justify-between">
+                <span className="text-white/60">Paid here (testnet MON)</span>
+                <span className="font-bold">{s ? `${mon(s.totalFee, 6)} MON` : "—"}</span>
+              </div>
               <p className="mt-2 text-[11px] text-white/40">
-                Ethereum: {gasUsed.toString()} gas used × live mainnet gas price
-                {ethGasPrice !== null && ` (${(Number(ethGasPrice) / 1e9).toFixed(2)} gwei)`}. Ethereum also waits ~12s per block.
+                {gasUsed.toString()} gas used × live Ethereum gas price
+                {ethGasPrice !== null && ` (${(Number(ethGasPrice) / 1e9).toFixed(2)} gwei)`}
+                {ethUsd !== null && ` × ETH $${Math.round(ethUsd)}`}.
               </p>
             </div>
 
@@ -91,6 +123,21 @@ export function Scoreboard() {
         </div>
       )}
     </>
+  );
+}
+
+function Bar({ label, ms, max, highlight }: { label: string; ms: number | null; max: number; highlight?: boolean }) {
+  const pct = ms === null ? 0 : Math.max(1.5, (ms / max) * 100);
+  return (
+    <div className="mb-2">
+      <div className="flex justify-between text-xs">
+        <span className={highlight ? "text-whizz" : "text-white/60"}>{label}</span>
+        <span className="font-mono">{ms === null ? "…" : ms >= 1000 ? `${ms / 1000}s` : `${ms}ms`}</span>
+      </div>
+      <div className="mt-1 h-2 overflow-hidden rounded-full bg-white/10">
+        <div className={`h-full ${highlight ? "bg-whizz" : "bg-white/40"}`} style={{ width: `${pct}%` }} />
+      </div>
+    </div>
   );
 }
 
